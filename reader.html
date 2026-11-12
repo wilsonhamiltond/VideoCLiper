@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Game Reader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<style>
+  :root {
+    --bg: #f7f6fb; --surface: #ffffff; --surface-2: #f1eff8; --text: #15121f; --muted: #6b6680;
+    --border: #e4e1ee; --accent: #7c3aed; --accent-2: #ec4899; --accent-3: #f97316;
+    --accent-soft: rgba(124, 58, 237, .12); --good: #16a34a; --bad: #dc2626;
+    --grad: linear-gradient(120deg, var(--accent), var(--accent-2) 60%, var(--accent-3));
+    --radius: 16px; --shadow: 0 1px 2px rgba(20, 10, 40, .04), 0 8px 24px rgba(20, 10, 40, .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f0d16; --surface: #18151f; --surface-2: #211d2b; --text: #f2f0f7;
+      --muted: #9a94ad; --border: #2c2738; --accent-soft: rgba(167, 139, 250, .16);
+      --accent: #a78bfa; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f0d16; --surface: #18151f; --surface-2: #211d2b; --text: #f2f0f7;
+    --muted: #9a94ad; --border: #2c2738; --accent-soft: rgba(167, 139, 250, .16);
+    --accent: #a78bfa; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.3);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 "Plus Jakarta Sans", system-ui, sans-serif; }
+  button, input, select { font: inherit; color: inherit; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 16px; }
+  header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+  header .wrap { display: flex; align-items: center; gap: 10px; height: 60px; }
+  .logo { width: 30px; height: 30px; border-radius: 9px; background: var(--grad); display: grid; place-items: center; color: #fff; }
+  .brand { font-weight: 800; letter-spacing: -.02em; }
+  header .spacer { flex: 1; }
+  header a { color: var(--muted); text-decoration: none; font-size: 14px; }
+  header a:hover { color: var(--text); }
+  h1 { font-size: clamp(26px, 4vw, 36px); letter-spacing: -.03em; line-height: 1.1; margin: 28px 0 6px; }
+  h1 span { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lede { color: var(--muted); margin: 0 0 20px; max-width: 680px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 16px; margin-bottom: 40px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+
+  .stage { position: relative; background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 16 / 9; display: grid; place-items: center; }
+  .stage video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: #bbb; padding: 20px; }
+  .empty b { display: block; color: #fff; font-size: 17px; margin-bottom: 4px; }
+
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+  .btn { border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
+  .btn:hover:not(:disabled) { border-color: var(--accent); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.primary { background: var(--grad); color: #fff; border: 0; }
+  .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .hint { font-size: 13px; color: var(--muted); }
+  kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; background: var(--surface-2); }
+
+  label.f { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
+  label.f:first-child { margin-top: 0; }
+  select, input[type=number] { width: 100%; border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 7px 10px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .check { display: flex; gap: 8px; align-items: center; font-size: 14px; margin-top: 10px; cursor: pointer; }
+  .check input { accent-color: var(--accent); width: 16px; height: 16px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); min-height: 22px; margin-top: 10px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.busy { background: var(--accent-3); animation: pulse 1s infinite; }
+  .dot.speak { background: var(--good); animation: pulse 1s infinite; }
+  .dot.err { background: var(--bad); }
+  @keyframes pulse { 50% { opacity: .35; } }
+
+  .now { margin-top: 16px; }
+  .now h2, .hist h2 { font-size: 14px; margin: 0 0 6px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+  .text { background: var(--surface-2); border-radius: 12px; padding: 12px 14px; min-height: 64px; white-space: pre-wrap; font-size: 16px; outline: none; }
+  .text:focus { box-shadow: 0 0 0 2px var(--accent); }
+  .hist { margin-top: 16px; }
+  .hist ol { list-style: none; padding: 0; margin: 0; max-height: 280px; overflow: auto; }
+  .hist li { padding: 8px 10px; border-radius: 10px; cursor: pointer; font-size: 14px; display: flex; gap: 8px; }
+  .hist li:hover { background: var(--surface-2); }
+  .hist li time { color: var(--muted); font-size: 12px; display: block; }
+  .hist li img { width: 84px; border-radius: 6px; flex: none; align-self: flex-start; border: 1px solid var(--border); }
+  .hist li div { min-width: 0; }
+  .hhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .hhead h2 { margin: 0; }
+  .btn.sm { padding: 3px 10px; font-size: 13px; }
+  .inp { width: 100%; border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 7px 10px; }
+  .script { background: var(--accent-soft); border-radius: 10px; padding: 10px 12px; margin: 0; font-size: 14px; font-style: italic; }
+  #uploadBtn[aria-disabled="true"] { opacity: .5; pointer-events: none; }
+  #rec.recording { background: var(--bad); }
+  .myv { list-style: none; padding: 0; margin: 10px 0 0; }
+  .myv li { display: flex; align-items: center; gap: 6px; padding: 6px 0; border-top: 1px solid var(--border); font-size: 14px; cursor: default; }
+  .myv li b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .char { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .char b { flex: 0 0 34%; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .char select { padding: 4px 8px; font-size: 13px; }
+  #snap { max-width: 100%; border-radius: 8px; margin-top: 8px; display: none; border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="logo" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>
+    </div>
+    <span class="brand">Game Reader</span>
+    <span class="spacer"></span>
+    <a href="/">← Clip Studio</a>
+  </div>
+</header>
+
+<main class="wrap">
+  <h1>Read your game's text <span>out loud</span></h1>
+  <p class="lede">Share the game window, draw a box around the dialogue area, and the reader screenshots it, reads the text and speaks it with the voice you pick. Everything except the neural voice runs on this computer.</p>
+
+  <div class="grid">
+    <section class="card">
+      <div class="stage" id="stage">
+        <video id="video" muted playsinline></video>
+        <canvas id="overlay"></canvas>
+        <div class="empty" id="empty"><div><b>No screen shared yet</b>Press “Share game screen” and pick the game window (or the whole screen).</div></div>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="share">Share game screen</button>
+        <button class="btn" id="read" disabled>Read now</button>
+        <button class="btn" id="auto" disabled>Auto-read: off</button>
+        <button class="btn" id="skip" disabled>Next line</button>
+        <button class="btn" id="stop">Stop &amp; clear</button>
+        <button class="btn" id="clearRegion" disabled>Whole screen</button>
+      </div>
+      <p class="hint">Drag on the preview to choose the area to read (a dialogue box works best). Shortcuts while this tab is focused: <kbd>R</kbd> read, <kbd>A</kbd> auto-read, <kbd>N</kbd> next line, <kbd>S</kbd> stop. With the game in focus, use <b>Auto-read</b>.</p>
+      <div class="status"><span class="dot" id="dot"></span><span id="status">Idle</span></div>
+
+      <div class="now">
+        <h2>Text found</h2>
+        <div class="text" id="text" contenteditable="true" spellcheck="false" aria-label="Recognized text (editable)"></div>
+        <div class="row">
+          <button class="btn" id="speakText">Speak this text</button>
+          <label class="check" style="margin:0"><input type="checkbox" id="showSnap"> Show what was captured</label>
+        </div>
+        <img id="snap" alt="Last captured region">
+      </div>
+    </section>
+
+    <aside>
+      <section class="card">
+        <label class="f" for="engine">Text recognition</label>
+        <select id="engine">
+          <option value="tesseract">Tesseract (fast, in the browser)</option>
+          <option value="ai">AI vision model (Ollama, best for stylized fonts)</option>
+        </select>
+        <label class="f" for="ocrLang">Game language</label>
+        <select id="ocrLang">
+          <option value="eng">English</option>
+          <option value="spa">Spanish</option>
+          <option value="eng+spa">English + Spanish</option>
+          <option value="por">Portuguese</option>
+          <option value="fra">French</option>
+          <option value="deu">German</option>
+          <option value="ita">Italian</option>
+          <option value="jpn">Japanese</option>
+          <option value="kor">Korean</option>
+          <option value="chi_sim">Chinese (simplified)</option>
+          <option value="rus">Russian</option>
+        </select>
+        <label class="check"><input type="checkbox" id="invert" checked> Auto-fix light text on dark boxes</label>
+
+        <label class="f" for="locale">Voice language</label>
+        <select id="locale"><option>Loading voices…</option></select>
+        <label class="f" for="voice">Voice</label>
+        <select id="voice"></select>
+        <div class="two">
+          <div>
+            <label class="f" for="rate">Speed <span id="rateV" class="hint">+0%</span></label>
+            <input type="range" id="rate" min="-50" max="100" step="5" value="0">
+          </div>
+          <div>
+            <label class="f" for="volume">Volume <span id="volV" class="hint">100%</span></label>
+            <input type="range" id="volume" min="0" max="100" step="5" value="100">
+          </div>
+        </div>
+        <label class="f" for="emotion">Emotion <span class="hint">(cloned voices)</span> <span id="emoV" class="hint"></span></label>
+        <input type="range" id="emotion" min="25" max="150" step="5" value="60">
+        <label class="check"><input type="checkbox" id="perChar" checked> Give each character their own voice (“Name: line”)</label>
+        <label class="check"><input type="checkbox" id="sayName"> Say the character's name before the line</label>
+
+        <label class="f" for="watch">Auto-read: watch the screen every</label>
+        <select id="watch">
+          <option value="100">0.1 s (fastest)</option>
+          <option value="200" selected>0.2 s</option>
+          <option value="500">0.5 s</option>
+          <option value="1000">1 s (lightest on the PC)</option>
+        </select>
+        <p class="hint" style="margin:4px 0 0">Text is only re-read when the picture in the box changes, so fast watching costs little.</p>
+        <label class="check"><input type="checkbox" id="stable" checked> Wait until the text stops changing (typewriter dialogue)</label>
+        <label class="f" for="mode">When a new screen appears while speaking</label>
+        <select id="mode">
+          <option value="queue" selected>Queue it: read every screen in order (conversation)</option>
+          <option value="newest">Jump to it: stop and read only the newest</option>
+        </select>
+        <label class="f" for="maxScreens">Screenshots in progress at a time</label>
+        <select id="maxScreens">
+          <option value="1">1 (read one, then capture the next)</option>
+          <option value="2" selected>2 (one speaking + one ready)</option>
+          <option value="3">3</option>
+          <option value="5">5</option>
+          <option value="0">No limit</option>
+        </select>
+        <p class="hint" style="margin:4px 0 0">When the limit is reached, no new screenshots are taken until a line finishes; then the screen shown at that moment is captured.</p>
+      </section>
+
+      <section class="card hist" id="cloneCard">
+        <h2>Clone your voice</h2>
+        <p class="hint" style="margin:0 0 8px">Record 10–20 seconds of yourself talking naturally, and the reader can speak the game in your voice. It runs on this PC; nothing is uploaded.</p>
+        <div id="cloneMissing" class="hint" hidden>Voice cloning isn't installed yet. See <b>Clone your voice</b> in the README.</div>
+        <div id="cloneForm">
+          <label class="f" for="cloneName">Name</label>
+          <input id="cloneName" class="inp" value="My voice" maxlength="40">
+          <label class="f">Read this out loud, with feeling (or say anything you like):</label>
+          <p class="script" id="cloneScript"></p>
+          <label class="check"><input type="checkbox" id="consent"> This is my own voice, or I have the person's permission</label>
+          <div class="row">
+            <button class="btn primary" id="rec" disabled>● Record</button>
+            <label class="btn" id="uploadBtn" aria-disabled="true">Upload audio<input type="file" id="cloneFile" accept="audio/*,video/*" hidden disabled></label>
+            <span id="recTime" class="hint"></span>
+          </div>
+        </div>
+        <ol id="myVoices" class="myv"></ol>
+      </section>
+
+      <section class="card hist">
+        <div class="hhead"><h2>Characters</h2><button class="btn sm" id="resetChars">Reset</button></div>
+        <p class="hint" style="margin:0 0 6px">Lines like “Name: text” get their own voice. Pick any voice for each character, including yours.</p>
+        <div id="chars"><p class="hint">No characters yet.</p></div>
+      </section>
+
+      <section class="card hist">
+        <div class="hhead"><h2>Up next <span id="queueCount"></span></h2><button class="btn sm" id="clearQueue">Clear</button></div>
+        <ol id="queue"></ol>
+      </section>
+
+      <section class="card hist">
+        <h2>Read so far</h2>
+        <ol id="history"><li class="hint" style="cursor:default">Nothing yet.</li></ol>
+      </section>
+    </aside>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
+const SETTINGS_KEY = 'gameReader.v1';
+const store = {
+  get() { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { return {}; } },
+  set(patch) { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...store.get(), ...patch })); } catch {} },
+};
+const saved = store.get();
+
+const state = {
+  stream: null,
+  region: saved.region || null,       // {x, y, w, h} in 0..1 of the video frame
+  drag: null,
+  busy: false,
+  auto: false,
+  timer: null,
+  lastSpoken: '',
+  dirty: false, prevSig: null, changingSince: 0,   // auto-read change detection
+  worker: null, workerLang: null, workerPsm: null,
+  audio: null,
+  voices: [],
+};
+
+/* ---------- status ---------- */
+function status(msg, kind = '') { $('status').textContent = msg; $('dot').className = 'dot ' + kind; }
+
+/* ---------- settings persistence ---------- */
+for (const id of ['engine', 'ocrLang', 'rate', 'volume', 'watch', 'mode', 'emotion', 'maxScreens']) if (saved[id] != null) $(id).value = saved[id];
+for (const id of ['invert', 'stable', 'showSnap', 'perChar', 'sayName']) if (saved[id] != null) $(id).checked = saved[id];
+for (const id of ['engine', 'ocrLang', 'rate', 'volume', 'watch', 'voice', 'locale', 'invert', 'stable', 'mode', 'showSnap', 'emotion', 'perChar', 'sayName', 'maxScreens']) {
+  $(id).addEventListener('change', () => {
+    const el = $(id);
+    store.set({ [id]: el.type === 'checkbox' ? el.checked : el.value });
+  });
+}
+const showRate = () => { $('rateV').textContent = ($('rate').value >= 0 ? '+' : '') + $('rate').value + '%'; };
+const showVol = () => { $('volV').textContent = $('volume').value + '%'; if (state.audio) state.audio.volume = $('volume').value / 100; };
+$('rate').addEventListener('input', showRate); $('volume').addEventListener('input', showVol);
+showRate(); showVol();
+$('watch').addEventListener('change', () => { if (state.auto) { stopAuto(); startAuto(); } });
+$('showSnap').addEventListener('change', () => { $('snap').style.display = $('showSnap').checked && $('snap').src ? 'block' : 'none'; });
+
+/* ---------- screen capture ---------- */
+$('share').addEventListener('click', async () => {
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 10 }, audio: false });
+    if (state.stream) state.stream.getTracks().forEach(t => t.stop());
+    state.stream = stream;
+    video.srcObject = stream;
+    await video.play();
+    $('empty').style.display = 'none';
+    $('read').disabled = $('auto').disabled = $('clearRegion').disabled = false;
+    $('share').textContent = 'Change screen';
+    stream.getVideoTracks()[0].addEventListener('ended', () => {
+      stopAuto();
+      state.stream = null; video.srcObject = null;
+      $('empty').style.display = '';
+      $('read').disabled = $('auto').disabled = $('clearRegion').disabled = true;
+      $('share').textContent = 'Share game screen';
+      status('Screen sharing stopped');
+    });
+    status(state.region ? 'Ready. Using your saved reading area.' : 'Ready. Drag on the preview to pick the text area.');
+    requestAnimationFrame(drawOverlay);
+    // Load the text recognizer now so the first read doesn't wait for it.
+    if ($('engine').value === 'tesseract') tesseractWorker().then(() => status('Ready.')).catch(e => status(e.message, 'err'));
+  } catch (e) {
+    if (e.name !== 'NotAllowedError') status('Could not share the screen: ' + e.message, 'err');
+  }
+});
+
+/* ---------- region selection ---------- */
+// Where the video picture sits inside the stage (object-fit: contain leaves bars).
+function videoBox() {
+  const r = overlay.getBoundingClientRect();
+  const vw = video.videoWidth || 16, vh = video.videoHeight || 9;
+  const s = Math.min(r.width / vw, r.height / vh);
+  const w = vw * s, h = vh * s;
+  return { x: (r.width - w) / 2, y: (r.height - h) / 2, w, h, rect: r };
+}
+function toNorm(ev) {
+  const b = videoBox();
+  const clamp = (v) => Math.max(0, Math.min(1, v));
+  return { x: clamp((ev.clientX - b.rect.left - b.x) / b.w), y: clamp((ev.clientY - b.rect.top - b.y) / b.h) };
+}
+overlay.addEventListener('pointerdown', (ev) => {
+  if (!state.stream) return;
+  overlay.setPointerCapture(ev.pointerId);
+  const p = toNorm(ev);
+  state.drag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+});
+overlay.addEventListener('pointermove', (ev) => {
+  if (!state.drag) return;
+  const p = toNorm(ev); state.drag.x1 = p.x; state.drag.y1 = p.y;
+});
+overlay.addEventListener('pointerup', () => {
+  const d = state.drag; state.drag = null;
+  if (!d) return;
+  const r = { x: Math.min(d.x0, d.x1), y: Math.min(d.y0, d.y1), w: Math.abs(d.x1 - d.x0), h: Math.abs(d.y1 - d.y0) };
+  if (r.w < 0.02 || r.h < 0.02) return;   // a click, not a drag
+  state.region = r; store.set({ region: r });
+  state.lastSpoken = ''; state.dirty = true; state.prevSig = null; state.workerPsm = null;
+  status('Reading area set.');
+});
+$('clearRegion').addEventListener('click', () => {
+  state.region = null; store.set({ region: null }); state.dirty = true; state.prevSig = null;
+  status('Reading the whole screen.');
+});
+
+function drawOverlay() {
+  const dpr = devicePixelRatio || 1;
+  const r = overlay.getBoundingClientRect();
+  if (overlay.width !== Math.round(r.width * dpr)) { overlay.width = Math.round(r.width * dpr); overlay.height = Math.round(r.height * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, r.width, r.height);
+  const d = state.drag;
+  const reg = d ? { x: Math.min(d.x0, d.x1), y: Math.min(d.y0, d.y1), w: Math.abs(d.x1 - d.x0), h: Math.abs(d.y1 - d.y0) } : state.region;
+  if (reg && state.stream) {
+    const b = videoBox();
+    const x = b.x + reg.x * b.w, y = b.y + reg.y * b.h, w = reg.w * b.w, h = reg.h * b.h;
+    ctx.fillStyle = 'rgba(0,0,0,.45)';
+    ctx.beginPath(); ctx.rect(b.x, b.y, b.w, b.h); ctx.rect(x, y, w, h); ctx.fill('evenodd');
+    ctx.strokeStyle = state.busy ? '#f97316' : '#a78bfa'; ctx.lineWidth = 2; ctx.setLineDash(d ? [6, 4] : []);
+    ctx.strokeRect(x, y, w, h);
+  }
+  if (state.stream) requestAnimationFrame(drawOverlay);
+}
+addEventListener('resize', () => requestAnimationFrame(drawOverlay));
+
+/* ---------- capture + preprocessing ---------- */
+function grab() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw) return null;
+  const r = state.region || { x: 0, y: 0, w: 1, h: 1 };
+  const sx = Math.round(r.x * vw), sy = Math.round(r.y * vh), sw = Math.max(1, Math.round(r.w * vw)), sh = Math.max(1, Math.round(r.h * vh));
+  // Small text OCRs much better upscaled; cap the size so whole-screen captures stay fast.
+  const scale = Math.min(3, Math.max(1, 1600 / sw));
+  const c = document.createElement('canvas');
+  c.width = Math.round(sw * scale); c.height = Math.round(sh * scale);
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(video, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return c;
+}
+// Tesseract wants dark text on a light background; games usually draw the opposite.
+function forOcr(src) {
+  const c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(src, 0, 0);
+  const img = g.getImageData(0, 0, c.width, c.height), px = img.data;
+  let sum = 0;
+  for (let i = 0; i < px.length; i += 4) { const l = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]; px[i] = l; sum += l; }
+  const invert = $('invert').checked && sum / (px.length / 4) < 128;
+  for (let i = 0; i < px.length; i += 4) {
+    let l = px[i];
+    if (invert) l = 255 - l;
+    l = Math.max(0, Math.min(255, (l - 128) * 1.6 + 128));   // a little extra contrast
+    px[i] = px[i + 1] = px[i + 2] = l;
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
+/* ---------- OCR ---------- */
+let workerLoading = null;
+function tesseractWorker() {
+  const lang = $('ocrLang').value;
+  if (state.worker && state.workerLang === lang) return Promise.resolve(state.worker);
+  if (workerLoading && workerLoading.lang === lang) return workerLoading;
+  workerLoading = loadWorker(lang).finally(() => { workerLoading = null; });
+  workerLoading.lang = lang;
+  return workerLoading;
+}
+async function loadWorker(lang) {
+  if (!window.Tesseract) throw new Error('Tesseract did not load (needs internet the first time).');
+  status('Loading text recognition for ' + $('ocrLang').selectedOptions[0].textContent + '… (first time downloads it)', 'busy');
+  if (state.worker) await state.worker.terminate();
+  state.worker = await Tesseract.createWorker(lang, 1);
+  state.workerLang = lang; state.workerPsm = null;
+  return state.worker;
+}
+
+function cleanText(data) {
+  // Keep lines Tesseract is reasonably sure of and that look like words, not texture noise.
+  const lines = (data.lines || []).filter(l => {
+    const t = l.text.trim();
+    const letters = (t.match(/\p{L}/gu) || []).length;
+    return t && l.confidence > 55 && letters >= 2 && letters / t.replace(/\s/g, '').length > 0.5;
+  }).map(l => l.text.trim());
+  const text = lines.length || !data.lines ? lines.join('\n') : '';
+  return tidy(text);
+}
+function tidy(text) {
+  return text
+    .replace(/-\n(?=\p{Ll})/gu, '')          // hyphenated line breaks
+    .replace(/([^.!?:…\n])\n(?!\n)/g, '$1 ')   // join wrapped lines of one sentence
+    .replace(/[|_~^`]+/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+async function recognize(canvas) {
+  if ($('engine').value === 'ai') {
+    const image = canvas.toDataURL('image/jpeg', 0.9);
+    const res = await fetch('/api/read-image', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Clip-Studio': '1' },
+      body: JSON.stringify({ image }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.detail || 'AI reader failed (' + res.status + ')');
+    return tidy(out.text || '');
+  }
+  const worker = await tesseractWorker();
+  // A drawn box is one block of text: tell Tesseract so it skips page-layout analysis.
+  const psm = state.region ? '6' : '3';
+  if (state.workerPsm !== psm) { await worker.setParameters({ tessedit_pageseg_mode: psm }); state.workerPsm = psm; }
+  const { data } = await worker.recognize(forOcr(canvas));
+  return cleanText(data);
+}
+
+/* ---------- cheap change detection ---------- */
+// A tiny grayscale thumbnail of the reading area. Comparing two of these takes well under a
+// millisecond, so auto-read can watch the screen often and run the OCR only when something changed.
+const thumb = document.createElement('canvas');
+const thumbCtx = thumb.getContext('2d', { willReadFrequently: true });
+function signature() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw) return null;
+  const r = state.region || { x: 0, y: 0, w: 1, h: 1 };
+  const sw = r.w * vw, sh = r.h * vh;
+  thumb.width = 200; thumb.height = Math.max(8, Math.round(200 * sh / sw));
+  thumbCtx.drawImage(video, r.x * vw, r.y * vh, sw, sh, 0, 0, thumb.width, thumb.height);
+  const px = thumbCtx.getImageData(0, 0, thumb.width, thumb.height).data;
+  const out = new Uint8Array(px.length / 4);
+  for (let i = 0, j = 0; i < px.length; i += 4, j++) out[j] = (px[i] * 77 + px[i + 1] * 150 + px[i + 2] * 29) >> 8;
+  return out;
+}
+function changed(a, b) {
+  if (!a || !b || a.length !== b.length) return true;
+  let n = 0;
+  for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 18) n++;
+  return n / a.length > 0.002;
+}
+
+/* ---------- compare texts ---------- */
+const norm = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+function similar(a, b) {
+  a = norm(a); b = norm(b);
+  if (!a || !b) return a === b;
+  if (a === b) return true;
+  const grams = (s) => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const k = s.slice(i, i + 2); m.set(k, (m.get(k) || 0) + 1); } return m; };
+  const A = grams(a), B = grams(b); let both = 0;
+  for (const [k, n] of A) both += Math.min(n, B.get(k) || 0);
+  return (2 * both) / (a.length + b.length - 2) > 0.85;
+}
+
+/* ---------- read cycle ---------- */
+// Screenshots in progress: the line being spoken plus the ones waiting. Capture stops at the limit.
+const inProgress = () => (current ? 1 : 0) + queue.length;
+const atLimit = () => +$('maxScreens').value > 0 && $('mode').value === 'queue' && inProgress() >= +$('maxScreens').value;
+
+async function readOnce(manual) {
+  if (state.busy || !state.stream) return;
+  if (atLimit()) {
+    if (manual) status(`Already ${inProgress()} screenshots in progress. Wait for a line to finish, or press Next line.`);
+    return;
+  }
+  state.busy = true;
+  try {
+    const canvas = grab();
+    if (!canvas) return;
+    if ($('showSnap').checked) { $('snap').src = canvas.toDataURL('image/jpeg', 0.7); $('snap').style.display = 'block'; }
+    if (manual) status('Reading the screen…', 'busy');
+    const text = await recognize(canvas);
+
+    if (manual) {
+      if (!text) { status('No text found in that area. Try a tighter box or the AI reader.'); return; }
+      enqueue(text, canvas); return;
+    }
+    // Auto mode: skip empty frames and repeats.
+    if (!text || similar(text, state.lastSpoken)) { if (!isSpeaking()) status('Auto-read: watching…'); return; }
+    enqueue(text, canvas);
+  } catch (e) {
+    status(e.message, 'err');
+    if (state.auto && $('engine').value === 'ai') stopAuto();
+  } finally {
+    state.busy = false;
+  }
+}
+
+// A small copy of the captured box, kept with each line in the queue and history.
+function shotOf(canvas) {
+  if (!canvas) return '';
+  const w = 240, h = Math.max(1, Math.round(canvas.height * w / canvas.width));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  c.getContext('2d').drawImage(canvas, 0, 0, w, h);
+  return c.toDataURL('image/jpeg', 0.7);
+}
+
+function lineItem(item, onClick, title) {
+  const li = document.createElement('li');
+  if (item.shot) { const img = document.createElement('img'); img.src = item.shot; img.alt = ''; li.append(img); }
+  const body = document.createElement('div');
+  const t = document.createElement('time'); t.textContent = item.time;
+  const s = document.createElement('span'); s.textContent = item.text;
+  body.append(t, s);
+  li.append(body);
+  li.title = title;
+  li.addEventListener('click', onClick);
+  return li;
+}
+
+function addHistory(item) {
+  const ol = $('history');
+  if (ol.firstElementChild && ol.firstElementChild.classList.contains('hint')) ol.innerHTML = '';
+  ol.prepend(lineItem(item, () => playNow(item.text, item.shot), 'Click to hear it again'));
+  while (ol.children.length > 50) ol.lastElementChild.remove();
+}
+
+// Each tick: compare a thumbnail with the previous one. When the picture changed, wait for it to hold
+// still for one tick (typewriter text has finished), then OCR once. Moving backgrounds never hold
+// still, so after SETTLE_MAX of constant change we read anyway; repeats are still skipped by text.
+const SETTLE_MAX = 2500;
+async function autoTick() {
+  // At the limit: take no screenshots at all. The thumbnail isn't updated either, so when a slot frees
+  // up, whatever screen is showing by then counts as changed and gets read.
+  if (atLimit()) return;
+  const sig = signature();
+  const now = performance.now();
+  if (changed(sig, state.prevSig)) {
+    state.dirty = true;
+    state.changingSince ||= now;
+    state.prevSig = sig;
+    if ($('stable').checked && now - state.changingSince < SETTLE_MAX) return;
+  } else {
+    state.changingSince = 0;
+  }
+  if (!state.dirty) return;
+  state.dirty = false; state.changingSince = 0;
+  await readOnce(false);
+}
+function startAuto() {
+  state.auto = true; state.lastSpoken = ''; state.dirty = true; state.prevSig = null; state.changingSince = 0;
+  $('auto').textContent = 'Auto-read: on'; $('auto').classList.add('on');
+  status('Auto-read: watching…');
+  const loop = async () => {
+    if (!state.auto) return;
+    try { await autoTick(); } catch (e) { status(e.message, 'err'); }
+    state.timer = setTimeout(loop, +$('watch').value);
+  };
+  loop();
+}
+function stopAuto() {
+  state.auto = false; clearTimeout(state.timer);
+  $('auto').textContent = 'Auto-read: off'; $('auto').classList.remove('on');
+}
+$('read').addEventListener('click', () => readOnce(true));
+$('auto').addEventListener('click', () => state.auto ? (stopAuto(), status('Auto-read off')) : startAuto());
+
+/* ---------- voice ---------- */
+async function loadVoices() {
+  try {
+    const res = await fetch('/api/voices');
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
+    state.voices = (await res.json()).voices;
+  } catch (e) {
+    // Offline or no server: fall back to the voices built into the browser / Windows.
+    state.voices = speechSynthesis.getVoices().map(v => ({ id: 'browser:' + v.name, name: v.name, gender: '', locale: v.lang, browser: true }));
+    if (!state.voices.length) { speechSynthesis.onvoiceschanged = loadVoices; }
+  }
+  const locales = [...new Set(state.voices.map(v => v.locale))].sort();
+  const names = new Intl.DisplayNames([navigator.language], { type: 'language' });
+  const label = (l) => { try { return names.of(l) + ' (' + l + ')'; } catch { return l; } };
+  $('locale').innerHTML = locales.map(l => `<option value="${l}">${label(l)}</option>`).join('');
+  const prefer = saved.locale && locales.includes(saved.locale) ? saved.locale
+    : locales.find(l => l === navigator.language) || locales.find(l => l.startsWith(navigator.language.slice(0, 2))) || locales.find(l => l === 'en-US') || locales[0];
+  if (prefer) $('locale').value = prefer;
+  fillVoices();
+}
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// Options for a voice <select>: your cloned voices first, then the voices for the chosen language.
+function voiceOptions(extra = '') {
+  const loc = $('locale').value;
+  const list = state.voices.filter(v => v.locale === loc);
+  const mine = state.clones.map(v => `<option value="clone:${v.id}">★ ${esc(v.name)} (cloned)</option>`).join('');
+  return extra + (mine ? `<optgroup label="My cloned voices">${mine}</optgroup>` : '') +
+    `<optgroup label="Voices">${list.map(v => `<option value="${v.id}">${esc(v.name)}${v.gender ? ' · ' + v.gender : ''}${v.multilingual ? ' · multilingual' : ''}</option>`).join('')}</optgroup>`;
+}
+function fillVoices() {
+  $('voice').innerHTML = voiceOptions();
+  const s = store.get().voice;
+  if (s && [...$('voice').options].some(o => o.value === s)) $('voice').value = s;
+  renderChars();
+  warmClone();
+}
+$('locale').addEventListener('change', () => { fillVoices(); store.set({ voice: $('voice').value }); updateScript(); });
+$('voice').addEventListener('change', warmClone);
+const showEmo = () => { $('emoV').textContent = (+$('emotion').value < 50 ? 'calm' : +$('emotion').value < 85 ? 'natural' : 'expressive') + ` (${$('emotion').value}%)`; };
+$('emotion').addEventListener('input', showEmo); showEmo();
+
+/* ---------- making it sound human ---------- */
+// "MERCHANT: WELCOME, TRAVELER... ▼" -> speaker "Merchant", line "Welcome, traveler…"
+function parseLine(raw) {
+  const m = raw.match(/^\s*([\p{Lu}][\p{L}'’.\-]*(?:\s+[\p{Lu}\d][\p{L}'’.\-\d]*){0,2})\s*[:：]\s*(.+)$/su);
+  if (!m) return { speaker: '', line: humanize(raw) };
+  return { speaker: titleCase(m[1]), line: humanize(m[2]) };
+}
+const titleCase = (s) => s === s.toUpperCase() ? s.toLowerCase().replace(/(^|\s)(\p{L})/gu, (_, a, b) => a + b.toUpperCase()) : s;
+function humanize(t) {
+  t = t.replace(/[▼▲▶►◀◆◇■□●○★☆♦※]+/g, ' ')   // "next page" arrows and decorations
+       .replace(/\.{3,}/g, '…').replace(/\s+/g, ' ').trim();
+  // Games love ALL CAPS; voices read it flat or spell words out. Make it sentence case.
+  const letters = (t.match(/\p{L}/gu) || []).length, upper = (t.match(/\p{Lu}/gu) || []).length;
+  if (letters > 8 && upper / letters > 0.8) {
+    t = t.toLowerCase().replace(/(^|[.!?…¡¿]\s*)(\p{L})/gu, (_, a, b) => a + b.toUpperCase()).replace(/\bi\b/g, 'I');
+  }
+  return t;
+}
+
+state.chars = store.get().chars || {};
+// A character gets a voice the first time they speak: unused voices, alternating male / female.
+function voiceForSpeaker(name) {
+  if (state.chars[name]) return state.chars[name];
+  const narrator = $('voice').value;
+  const pool = state.voices.filter(v => v.locale === $('locale').value && v.id !== narrator);
+  const used = new Set(Object.values(state.chars));
+  const want = Object.keys(state.chars).length % 2 ? 'Female' : 'Male';
+  const pick = pool.find(v => !used.has(v.id) && v.gender === want) || pool.find(v => !used.has(v.id)) || pool[0];
+  state.chars[name] = pick ? pick.id : narrator;
+  store.set({ chars: state.chars });
+  renderChars();
+  return state.chars[name];
+}
+function renderChars() {
+  const names = Object.keys(state.chars);
+  if (!names.length) { $('chars').innerHTML = '<p class="hint">No characters yet.</p>'; return; }
+  $('chars').innerHTML = '';
+  for (const name of names) {
+    const row = document.createElement('div'); row.className = 'char';
+    const b = document.createElement('b'); b.textContent = name; b.title = name;
+    const sel = document.createElement('select');
+    sel.innerHTML = voiceOptions(`<option value="">Narrator voice</option>`);
+    sel.value = [...sel.options].some(o => o.value === state.chars[name]) ? state.chars[name] : '';
+    sel.addEventListener('change', () => { state.chars[name] = sel.value || $('voice').value; store.set({ chars: state.chars }); warmClone(sel.value); });
+    row.append(b, sel);
+    $('chars').append(row);
+  }
+}
+$('resetChars').addEventListener('click', () => { state.chars = {}; store.set({ chars: {} }); renderChars(); });
+
+/* ---------- voice cloning ---------- */
+state.clones = [];
+const SCRIPTS = {
+  es: 'Hola, esta es mi voz. Me encanta jugar por las noches, sobre todo historias largas con muchos personajes. ¿Estás listo? ¡Pues vamos a empezar la aventura y a ver qué pasa! Aunque, la verdad… un poco de miedo sí me da.',
+  en: "Hi, this is my voice. I love playing games late at night, especially long stories with lots of characters. Are you ready? Then let's start the adventure and see what happens! Although, honestly… I'm a little scared.",
+  pt: 'Olá, esta é a minha voz. Adoro jogar à noite, principalmente histórias longas com muitos personagens. Está pronto? Então vamos começar a aventura e ver o que acontece!',
+  fr: "Salut, c'est ma voix. J'adore jouer le soir, surtout aux longues histoires avec plein de personnages. Tu es prêt ? Alors commençons l'aventure et voyons ce qui se passe !",
+};
+const updateScript = () => { $('cloneScript').textContent = SCRIPTS[$('locale').value.slice(0, 2)] || SCRIPTS.en; };
+
+async function loadClones() {
+  try {
+    const st = await (await fetch('/api/clone/status')).json();
+    $('cloneMissing').hidden = st.installed; $('cloneForm').hidden = !st.installed;
+    state.clones = (await (await fetch('/api/clone/voices')).json()).voices;
+  } catch { state.clones = []; $('cloneMissing').hidden = false; $('cloneForm').hidden = true; }
+  const ol = $('myVoices'); ol.innerHTML = '';
+  for (const v of state.clones) {
+    const li = document.createElement('li');
+    li.innerHTML = `<b title="${esc(v.name)}">★ ${esc(v.name)}</b><span class="hint">${v.seconds}s · ${esc(v.language)}</span>`;
+    const play = Object.assign(document.createElement('button'), { className: 'btn sm', textContent: '▶', title: 'Hear the recording' });
+    play.onclick = () => new Audio('/api/clone/sample/' + v.id).play();
+    const use = Object.assign(document.createElement('button'), { className: 'btn sm', textContent: 'Use', title: 'Read with this voice' });
+    use.onclick = () => { $('voice').value = 'clone:' + v.id; store.set({ voice: $('voice').value }); warmClone(); };
+    const del = Object.assign(document.createElement('button'), { className: 'btn sm', textContent: '✕', title: 'Delete this voice' });
+    del.onclick = async () => {
+      if (!confirm(`Delete the voice "${v.name}"? This can't be undone.`)) return;
+      await fetch('/api/clone/voices/' + v.id, { method: 'DELETE' });
+      await loadClones(); fillVoices();
+    };
+    li.append(play, use, del);
+    ol.append(li);
+  }
+}
+
+// Loading the cloning model takes a while the first time (download ~3 GB, then ~20 s per start),
+// so start it as soon as a cloned voice is picked rather than on the first line.
+let cloneReady = false;
+async function warmClone(id) {
+  id = typeof id === 'string' ? id : $('voice').value;
+  if (cloneReady || !id.startsWith('clone:')) return;
+  status('Loading the voice-cloning model… (first time downloads it, a few minutes)', 'busy');
+  try {
+    const res = await fetch('/api/clone/start', { method: 'POST', headers: { 'X-Clip-Studio': '1' } });
+    let h = await res.json();
+    if (!res.ok) throw new Error(h.detail);
+    while (h && (h.state === 'loading' || h.state === 'warming up')) { await new Promise(r => setTimeout(r, 1500)); h = (await (await fetch('/api/clone/status')).json()).worker; }
+    if (!h || h.state !== 'ready') throw new Error('Voice model failed: ' + (h && h.error || 'worker stopped'));
+    cloneReady = true;
+    status(`Your cloned voice is ready (${h.device === 'cuda' ? 'GPU' : 'CPU, slow'}).`);
+  } catch (e) { status(e.message, 'err'); }
+}
+
+const syncRecButtons = () => {
+  const ok = $('consent').checked;
+  $('rec').disabled = !ok; $('cloneFile').disabled = !ok; $('uploadBtn').setAttribute('aria-disabled', String(!ok));
+};
+$('consent').addEventListener('change', syncRecButtons);
+
+async function uploadSample(blob) {
+  status('Saving your voice…', 'busy');
+  const params = new URLSearchParams({ name: $('cloneName').value || 'My voice', language: $('locale').value.slice(0, 2) });
+  const res = await fetch('/api/clone/voices?' + params, { method: 'POST', headers: { 'X-Clip-Studio': '1' }, body: blob });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok) { status(out.detail || 'Saving the voice failed', 'err'); return; }
+  await loadClones(); fillVoices();
+  $('voice').value = 'clone:' + out.id; store.set({ voice: $('voice').value });
+  status(`Saved "${out.name}" (${out.seconds} s). It's now the reading voice.`);
+  warmClone();
+}
+
+let recorder = null, recTimer = 0;
+$('rec').addEventListener('click', async () => {
+  if (recorder) { recorder.stop(); return; }
+  let mic;
+  try {
+    mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true } });
+  } catch (e) { status('Microphone not available: ' + e.message, 'err'); return; }
+  const chunks = [];
+  recorder = new MediaRecorder(mic);
+  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  recorder.onstop = () => {
+    mic.getTracks().forEach(t => t.stop());
+    clearInterval(recTimer); recorder = null;
+    $('rec').textContent = '● Record'; $('rec').classList.remove('recording'); $('recTime').textContent = '';
+    uploadSample(new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' }));
+  };
+  recorder.start();
+  const t0 = Date.now();
+  $('rec').textContent = '■ Stop'; $('rec').classList.add('recording');
+  recTimer = setInterval(() => {
+    const s = Math.round((Date.now() - t0) / 1000);
+    $('recTime').textContent = `${s}s ${s < 10 ? '· keep going' : s < 25 ? '· good' : '· stopping at 30s'}`;
+    if (s >= 30) recorder && recorder.stop();
+  }, 250);
+});
+$('cloneFile').addEventListener('change', () => { const f = $('cloneFile').files[0]; if (f) uploadSample(f); $('cloneFile').value = ''; });
+
+/* ---------- conversation queue ---------- */
+// Every new screen of text becomes a line in the queue; lines are spoken one after another, in the
+// order they appeared. While one plays, the next one's audio is already streaming in.
+const queue = [];          // lines waiting: {text, shot, time, audio?}
+let current = null;        // the line being spoken
+let lineSeq = 0;
+
+const isSpeaking = () => !!current;
+const idleStatus = () => status(state.auto ? 'Auto-read: watching…' : 'Done');
+
+// A line to speak: who says it, what is said, and in which voice.
+function makeItem(text, shot, time) {
+  const { speaker, line } = parseLine(text);
+  const voice = (speaker && $('perChar').checked && voiceForSpeaker(speaker)) || $('voice').value;
+  const say = speaker && $('sayName').checked ? `${speaker}: ${line}` : line;
+  return { text: speaker ? `${speaker}: ${line}` : line, say, voice, speaker, shot, time };
+}
+
+function enqueue(text, canvas) {
+  const item = makeItem(text, shotOf(canvas), new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+  state.lastSpoken = text;
+  addHistory(item);
+  // Typewriter text read before it finished: the full line replaces the partial one still waiting.
+  const last = queue[queue.length - 1];
+  if (last && norm(text).startsWith(norm(last.text))) { dropAudio(last); queue.pop(); }
+  if ($('mode').value === 'newest') { queue.splice(0).forEach(dropAudio); queue.push(item); skip(); }
+  else queue.push(item);
+  renderQueue();
+  pump();
+}
+
+function playNow(text, shot) {
+  queue.unshift(makeItem(text, shot, 'replay'));
+  skip();
+}
+
+const isBrowserVoice = (item) => item.voice.startsWith('browser:');
+function makeAudio(item) {
+  const text = item.say.slice(0, 3000);
+  const url = item.voice.startsWith('clone:')
+    ? '/api/clone/speak?' + new URLSearchParams({ text, voice: item.voice.slice(6), language: $('locale').value.slice(0, 2), emotion: $('emotion').value / 100 })
+    : '/api/speak?' + new URLSearchParams({ text, voice: item.voice, rate: $('rate').value });
+  const a = new Audio(url);
+  a.preload = 'auto';   // starts streaming now, even before play()
+  return a;
+}
+// Clearing src also closes the stream, so the server stops synthesizing a line nobody will hear.
+function dropAudio(item) {
+  if (!item || !item.audio) return;
+  item.audio.pause(); item.audio.removeAttribute('src'); item.audio.load(); item.audio = null;
+}
+function prefetch() {
+  const next = queue[0];
+  if (next && !next.audio && !isBrowserVoice(next)) next.audio = makeAudio(next);
+}
+
+async function pump() {
+  if (current || !queue.length) { prefetch(); renderQueue(); return; }
+  const item = current = queue.shift();
+  const seq = ++lineSeq;
+  $('text').textContent = item.text;
+  renderQueue();
+  prefetch();
+  try { await say(item, seq); } catch (e) { console.warn(e); }
+  if (seq !== lineSeq) return;        // skipped or stopped: whoever did that moves the queue on
+  dropAudio(item);
+  // A short beat between lines, like people taking turns (the next line is already loaded).
+  if (queue.length) await new Promise(r => setTimeout(r, 280));
+  if (seq !== lineSeq) return;
+  current = null;
+  if (queue.length) pump(); else { idleStatus(); renderQueue(); }
+}
+
+// Speaks one line; resolves when it has finished (or failed).
+async function say(item, seq) {
+  const left = () => queue.length ? ` · ${queue.length} more in the queue` : '';
+  const volume = $('volume').value / 100;
+  if (!isBrowserVoice(item)) {
+    try {
+      const audio = item.audio || (item.audio = makeAudio(item));
+      audio.volume = volume;
+      // Cloned voices have no speed setting of their own; speed playback up or down (pitch is kept).
+      if (item.voice.startsWith('clone:')) audio.playbackRate = Math.max(0.5, 1 + $('rate').value / 100);
+      state.audio = audio;
+      if (audio.readyState < 3) status('Getting the voice ready…' + left(), 'busy');
+      audio.onplaying = () => { if (seq === lineSeq) status('Speaking' + left(), 'speak'); };
+      const done = new Promise((res, rej) => { audio.onended = res; audio.onerror = () => rej(new Error('audio failed')); });
+      await audio.play();
+      status('Speaking' + left(), 'speak');
+      await done;
+      return;
+    } catch (e) {
+      if (seq !== lineSeq) return;
+      console.warn('Neural voice failed, using the browser voice:', e);
+    }
+  }
+  await new Promise((res) => {
+    const u = new SpeechSynthesisUtterance(item.say);
+    const bv = speechSynthesis.getVoices();
+    u.voice = bv.find(v => 'browser:' + v.name === item.voice) || bv.find(v => v.lang === $('locale').value) || null;
+    u.lang = $('locale').value; u.rate = Math.max(0.5, 1 + $('rate').value / 100); u.volume = volume;
+    u.onend = u.onerror = res;
+    status('Speaking (browser voice)' + left(), 'speak');
+    speechSynthesis.speak(u);
+  });
+}
+
+// End the current line and go on to the next one.
+function skip() {
+  lineSeq++;
+  dropAudio(current);
+  speechSynthesis.cancel();
+  current = null;
+  pump();
+}
+// Silence everything and empty the queue.
+function stopVoice() {
+  queue.splice(0).forEach(dropAudio);
+  lineSeq++;
+  dropAudio(current);
+  speechSynthesis.cancel();
+  current = null;
+  renderQueue();
+}
+
+function renderQueue() {
+  const ol = $('queue');
+  ol.innerHTML = '';
+  $('queueCount').textContent = queue.length ? `(${queue.length})` : '';
+  $('skip').disabled = !current;
+  if (!queue.length) { ol.innerHTML = '<li class="hint" style="cursor:default">Nothing waiting.</li>'; return; }
+  queue.forEach((item, i) => ol.append(lineItem(item, () => { dropAudio(queue.splice(i, 1)[0]); renderQueue(); prefetch(); }, 'Click to remove from the queue')));
+}
+
+$('stop').addEventListener('click', () => { stopVoice(); status(state.auto ? 'Auto-read: watching…' : 'Stopped'); });
+$('skip').addEventListener('click', skip);
+$('clearQueue').addEventListener('click', () => { queue.splice(0).forEach(dropAudio); renderQueue(); });
+$('speakText').addEventListener('click', () => { const t = $('text').textContent.trim(); if (t) playNow(t, ''); });
+
+addEventListener('keydown', (e) => {
+  if (e.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (k === 'r' && state.stream) readOnce(true);
+  else if (k === 'a' && state.stream) state.auto ? stopAuto() : startAuto();
+  else if (k === 'n') skip();
+  else if (k === 's') { stopVoice(); status('Stopped'); }
+});
+renderQueue();
+
+updateScript();
+loadClones().then(loadVoices);
+</script>
+</body>
+</html>
