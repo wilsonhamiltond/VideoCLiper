@@ -92,6 +92,10 @@ def cookies_problem() -> str | None:
         return "cookies.txt has no youtube.com cookies"
     # A signed-in youtube.com session always has LOGIN_INFO and the first-party SID cookies.
     missing = [n for n in ("LOGIN_INFO", "SAPISID", "__Secure-1PSID") if n not in names]
+    if missing and "__Secure-3PSID" in names:
+        # Only the third-party copies came along: exported from a Google tab, not a youtube.com tab.
+        return ("cookies.txt was exported from a Google page rather than youtube.com (it has only YouTube's "
+                f"third-party cookies and lacks {', '.join(missing)}); export it while the youtube.com tab is open")
     if missing:
         return f"cookies.txt isn't a signed-in YouTube session (it lacks {', '.join(missing)})"
     return None
@@ -324,6 +328,8 @@ def start_fetch(body: dict):
     url = str(body.get("url", "")).strip()
     if not re.match(r"^https?://\S+$", url):
         raise HTTPException(400, "Paste a full link starting with https://")
+    if len(re.findall(r"https?://", url)) > 1:
+        raise HTTPException(400, "That box has more than one link pasted together. Clear it and paste one link.")
     start, end = str(body.get("start") or "").strip(), str(body.get("end") or "").strip()
     for t in (start, end):
         if t and not TIME.match(t):

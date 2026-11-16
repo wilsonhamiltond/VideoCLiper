@@ -64,6 +64,14 @@ Press **Stock video** next to **Import link**, type a topic (e.g. `motivation`) 
 - **Rights:** Pexels videos are free to use and edit, with no attribution required. The progress message names the creators if you want to credit them.
 - English keywords find the most clips, even for a voice-over in another language.
 
+## Follow me scene
+A card with your logo, @handle, a short message and a **Follow** button pops up over the video for a few seconds (the sound keeps playing).
+- **Set it per account:** **Accounts → Edit → Follow me scene**. Tick **Add it to clips by default**, then set the message (e.g. `Follow for more`), the button text, when it shows (start, middle or end of the clip) and how long (2–5 s). It uses the account's logo and handle from **Branding**.
+- **Per clip:** **Follow me** in the editor toolbar turns it off for that clip or moves it: start, middle, end, **At a specific time…** (type it, e.g. `0:12` or `12.5`, or drag the slider), or **Start it at the playhead**.
+- **Publish all:** the **Follow me scene** section turns it on or off and sets when it shows (account default, start, middle, end or a specific time) for every ticked clip at once; each clip row shows when its card plays.
+- **Publishing:** each account gets its own card, and accounts without one get none. Accounts with different cards are rendered separately.
+- The editor previews the card of the banner's account, else the first account that has one. It never shows during the Hook intro.
+
 ## Background music
 Press **Music** in the editor toolbar, tick **Add background music** and pick a track, or **Add music file…** (MP3, M4A, WAV, OGG, OPUS, FLAC, up to 60 MB).
 - Tracks stay in a library in `data/music/`, ready for any clip. The stock video dialog can pick one too.

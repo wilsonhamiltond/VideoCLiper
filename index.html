@@ -6,54 +6,85 @@
 <title>Clip Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
 <style>
+  /* Clip Studio — editing-bay theme. Marker yellow is borrowed from the clips' own caption highlight. */
   :root {
-    --bg: #f7f6fb;
+    --bg: #eceef2;
     --surface: #ffffff;
-    --surface-2: #f1eff8;
-    --text: #15121f;
-    --muted: #6b6680;
-    --border: #e4e1ee;
-    --accent: #7c3aed;
-    --accent-2: #ec4899;
-    --accent-3: #f97316;
-    --accent-soft: rgba(124, 58, 237, .12);
-    --good: #16a34a;
-    --grad: linear-gradient(120deg, var(--accent), var(--accent-2) 60%, var(--accent-3));
-    --radius: 16px;
-    --shadow: 0 1px 2px rgba(20, 10, 40, .04), 0 8px 24px rgba(20, 10, 40, .06);
+    --surface-2: #f3f4f7;
+    --text: #15171c;
+    --muted: #5c6370;
+    --border: #dadee5;
+    --marker: #ffd23f;          /* fills: primary buttons, scores, highlights */
+    --on-marker: #15171c;
+    --accent: #a15c00;          /* readable accent for text, icons, outlines (hex: canvas appends alpha) */
+    --on-accent: #ffffff;
+    --accent-soft: rgba(255, 196, 0, .16);
+    --good: #15803d;
+    --viewer: #0d0f13;
+    --grad: var(--marker);
+    --radius: 14px;
+    --shadow: none;
+    --head-h: 56px;
+    --gutter: clamp(16px, 2vw, 32px);
+    --display: "Bricolage Grotesque", "Instrument Sans", system-ui, sans-serif;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --bg: #0f0d16; --surface: #18151f; --surface-2: #211d2b; --text: #f2f0f7;
-      --muted: #9a94ad; --border: #2c2738; --accent-soft: rgba(167, 139, 250, .16);
-      --accent: #a78bfa; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.3);
+      --bg: #0e1014; --surface: #16191e; --surface-2: #1e2228; --text: #eceef2;
+      --muted: #8d95a2; --border: #2a2f37; --accent-soft: rgba(255, 210, 63, .12);
+      --accent: #ffd23f; --on-accent: #15171c; --good: #4ade80; --viewer: #08090b;
     }
   }
   :root[data-theme="dark"] {
-    --bg: #0f0d16; --surface: #18151f; --surface-2: #211d2b; --text: #f2f0f7;
-    --muted: #9a94ad; --border: #2c2738; --accent-soft: rgba(167, 139, 250, .16);
-    --accent: #a78bfa; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.3);
+    --bg: #0e1014; --surface: #16191e; --surface-2: #1e2228; --text: #eceef2;
+    --muted: #8d95a2; --border: #2a2f37; --accent-soft: rgba(255, 210, 63, .12);
+    --accent: #ffd23f; --on-accent: #15171c; --good: #4ade80; --viewer: #08090b;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.5 "Plus Jakarta Sans", system-ui, sans-serif;
+    font: 15px/1.5 "Instrument Sans", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
   button, input, select { font: inherit; color: inherit; }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 16px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .wrap { max-width: none; margin: 0; padding: 0 var(--gutter); }
 
-  header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
-  header .wrap { display: flex; align-items: center; gap: 10px; height: 60px; }
-  .logo { width: 30px; height: 30px; border-radius: 9px; background: var(--grad); display: grid; place-items: center; }
-  .brand { font-weight: 800; letter-spacing: -.02em; }
+  header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--surface) 88%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
+  header .wrap { display: flex; align-items: center; gap: 10px; height: var(--head-h); }
+  .logo { width: 28px; height: 28px; border-radius: 7px; background: var(--marker); display: grid; place-items: center; transform: rotate(-4deg); }
+  .brand { font: 800 18px/1 var(--display); letter-spacing: -.02em; }
   header .spacer { flex: 1; }
+
+  /* Left menu: Accounts and API credentials */
+  :root { --side-w: 212px; }
+  :root.side-collapsed { --side-w: 60px; }
+  body { padding-left: var(--side-w); }
+  header { margin-left: calc(-1 * var(--side-w)); }
+  .side-nav { position: fixed; z-index: 4; left: 0; top: var(--head-h); bottom: 0; width: var(--side-w); display: flex; flex-direction: column; gap: 4px; padding: 16px 10px; background: var(--surface); border-right: 1px solid var(--border); overflow: hidden; }
+  .side-nav .spacer { flex: 1; }
+  .side-title { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 0 10px 6px; white-space: nowrap; }
+  .side-btn { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 9px; background: transparent; cursor: pointer; text-align: left; font-size: 14px; font-weight: 600; white-space: nowrap; }
+  .side-btn:hover { background: var(--surface-2); }
+  .side-btn svg { flex: none; color: var(--accent); }
+  .side-btn .side-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .side-btn .badge { font-size: 11px; font-weight: 800; min-width: 18px; padding: 0 6px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); text-align: center; }
+  .side-btn .badge:empty { display: none; }
+  .side-toggle svg { color: var(--muted); transition: transform .15s; }
+  :root.side-collapsed .side-title, :root.side-collapsed .side-label { display: none; }
+  :root.side-collapsed .side-btn { justify-content: center; position: relative; }
+  :root.side-collapsed .side-btn .badge { position: absolute; top: 2px; right: 2px; min-width: 16px; padding: 0 4px; font-size: 10px; }
+  :root.side-collapsed .side-toggle svg { transform: rotate(180deg); }
+  @media (max-width: 760px) {
+    :root { --side-w: 60px; }
+    .side-title, .side-label, .side-toggle { display: none; }
+    .side-btn { justify-content: center; position: relative; }
+    .side-btn .badge { position: absolute; top: 2px; right: 2px; min-width: 16px; padding: 0 4px; font-size: 10px; }
+  }
   .pill { font-size: 12px; color: var(--muted); border: 1px solid var(--border); padding: 4px 10px; border-radius: 99px; background: var(--surface); }
 
-  h1 { font-size: clamp(28px, 4vw, 40px); letter-spacing: -.03em; line-height: 1.1; margin: 36px 0 8px; }
-  h1 span { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .lede { color: var(--muted); margin: 0 0 24px; max-width: 620px; }
 
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
 
@@ -62,7 +93,7 @@
   .drop .icon { flex: none; width: 52px; height: 52px; border-radius: 14px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; }
   .drop strong { display: block; font-size: 16px; }
   .drop small { color: var(--muted); }
-  .drop.has-file .icon { background: var(--grad); color: #fff; }
+  .drop.has-file .icon { background: var(--marker); color: var(--on-marker); }
 
   .setup { padding: 20px; display: grid; gap: 18px; }
   .card.setup.collapsed { display: none; }
@@ -105,7 +136,8 @@
   select:focus, input[type=text]:focus, input[type=password]:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   .btn { border: 0; border-radius: 12px; padding: 11px 18px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
-  .btn-primary { background: var(--grad); color: #fff; box-shadow: 0 6px 18px rgba(124, 58, 237, .3); }
+  .btn-primary { background: var(--marker); color: var(--on-marker); box-shadow: inset 0 -2px 0 rgba(0,0,0,.14); }
+  .btn-primary:not(:disabled):hover { background: #ffc60a; }
   .btn-primary:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
   .btn-ghost { background: var(--surface-2); border: 1px solid var(--border); }
   .btn-ghost:hover { border-color: var(--accent); }
@@ -114,7 +146,7 @@
   .progress { display: none; gap: 8px; }
   .progress.on { display: grid; }
   .bar { height: 8px; background: var(--surface-2); border-radius: 99px; overflow: hidden; }
-  .bar i { display: block; height: 100%; width: 0; background: var(--grad); transition: width .25s; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
   .progress small { color: var(--muted); }
 
   #workspace { display: none; margin: 24px 0 60px; gap: 20px; }
@@ -156,12 +188,14 @@
   .view-zoom #vz-level { min-width: 58px; font-variant-numeric: tabular-nums; }
   .ov { position: absolute; left: 6%; right: 6%; text-align: center; font-weight: 800; color: #fff; line-height: 1.15; pointer-events: none; word-wrap: break-word; }
   .ov-hook { top: 7%; font-size: 7cqmin; -webkit-text-stroke: .9cqmin #000; paint-order: stroke fill; }
+  .ov-hook b { font-weight: inherit; background: #facc15; color: #111; -webkit-text-stroke: 0; padding: 0 .14em; border-radius: .16em; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+  .ov-hook { pointer-events: auto; cursor: ns-resize; touch-action: none; }
   .ov-cap { bottom: 13%; font-size: 5.6cqmin; }
   .ov-cap span { background: #facc15; color: #111; padding: .1em .35em; border-radius: .25em; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
   .ov-cap:empty, .ov-hook:empty, .ov-auto:empty { display: none; }
   /* Captions can be dragged up and down in the preview. */
-  .ov-cap, .ov-auto { pointer-events: auto; cursor: ns-resize; touch-action: none; }
-  .ov-cap.dragging, .ov-auto.dragging { outline: 2px dashed #facc15; outline-offset: 4px; }
+  .ov-cap, .ov-auto, .ov-hook { pointer-events: auto; cursor: ns-resize; touch-action: none; }
+  .ov-cap.dragging, .ov-auto.dragging, .ov-hook.dragging { outline: 2px dashed #facc15; outline-offset: 4px; }
   .play-btn { position: absolute; inset: 0; margin: auto; width: 64px; height: 64px; border-radius: 50%; border: 0; background: rgba(0,0,0,.55); color: #fff; cursor: pointer; display: grid; place-items: center; transition: opacity .2s; }
   .frame.playing .play-btn { opacity: 0; }
   .frame.playing:hover .play-btn { opacity: 1; }
@@ -195,9 +229,9 @@
   .thumb { position: relative; aspect-ratio: 16/10; border-radius: 8px; background: var(--surface-2) center / cover; overflow: hidden; }
   .thumb em { position: absolute; right: 4px; bottom: 4px; font-style: normal; font-size: 11px; font-weight: 700; background: rgba(0,0,0,.7); color: #fff; padding: 1px 5px; border-radius: 5px; }
   .clip-top { display: flex; align-items: center; gap: 8px; }
-  .score { font-weight: 800; font-size: 13px; padding: 2px 8px; border-radius: 99px; color: #fff; background: var(--grad); }
-  .score.mid { background: #a855f7; }
-  .score.low { background: #94a3b8; }
+  .score { font-weight: 800; font-size: 13px; padding: 2px 8px; border-radius: 99px; color: var(--on-marker); background: var(--marker); }
+  .score.mid { background: color-mix(in srgb, var(--marker) 40%, var(--surface-2)); color: var(--text); }
+  .score.low { background: var(--surface-2); color: var(--muted); box-shadow: inset 0 0 0 1px var(--border); }
   .clip-title { font-weight: 700; font-size: 14px; }
   .clip-time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
@@ -227,7 +261,7 @@
   .teaser { display: grid; gap: 12px; align-content: start; }
   .hk-stage { position: relative; }
   #hk-canvas { width: 100%; height: auto; border-radius: 10px; background: #000; display: block; }
-  .hk-badge { position: absolute; top: 8px; left: 8px; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  .hk-badge { position: absolute; top: 8px; left: 8px; padding: 2px 8px; border-radius: 999px; background: var(--marker); color: var(--on-marker); font-size: 11px; font-weight: 700; }
   .hk-badge[hidden] { display: none; }
   .hk-track, .hk-clip { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; }
   .hk-track input, .hk-clip input { position: relative; flex: 1; min-width: 0; }
@@ -257,7 +291,14 @@
   .cam-pos button:hover { border-color: var(--accent); color: var(--text); }
   .cam-pos button.on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
   .scenes-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
-  .ov-banner { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .ov-banner, .ov-follow { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #fm-canvas { width: 100%; height: auto; border-radius: 10px; background: #000; display: block; }
+  .fm-src { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+  .fm-src img { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex: none; }
+  .fm-src .grow { flex: 1; min-width: 0; }
+  #fm-at-field[hidden], #fm-more[hidden], #bf-opts[hidden], #bf-t-field[hidden] { display: none; }
+  .acct-brand .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 520px) { .acct-brand .row2 { grid-template-columns: 1fr; } }
   .layers { position: absolute; inset: 0; pointer-events: none; }
   .layer-box { position: absolute; pointer-events: auto; cursor: move; touch-action: none; }
   .layer-box canvas { display: block; width: 100%; height: 100%; }
@@ -326,7 +367,7 @@
   .stock-key[hidden] { display: none; }
   .busy-dlg { width: min(520px, calc(100vw - 32px)); }
   .busy-dlg .btn[hidden] { display: none; }
-  .busy-dlg::backdrop { background: rgba(10, 6, 20, .55); backdrop-filter: blur(3px); }
+  .busy-dlg::backdrop { background: rgba(8, 10, 14, .55); backdrop-filter: blur(3px); }
   .busy { display: grid; gap: 16px; padding: 22px 22px 6px; }
   .busy-head { display: flex; align-items: center; gap: 14px; }
   .busy-head h2 { margin: 0; font-size: 18px; }
@@ -409,9 +450,13 @@
   .pv-media { display: grid; gap: 10px; position: sticky; top: 0; }
   .pv-stage { position: relative; border-radius: 12px; overflow: hidden; background: #000; aspect-ratio: var(--pva, 9 / 16); }
   .pv-stage video { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
-  .pv-busy { position: absolute; inset: 0; display: grid; align-content: center; gap: 10px; padding: 18px; background: rgba(10, 6, 20, .82); color: #fff; text-align: center; }
+  .pv-busy { position: absolute; inset: 0; display: grid; align-content: center; gap: 10px; padding: 18px; background: rgba(8, 10, 14, .82); color: #fff; text-align: center; }
   .pv-busy[hidden] { display: none; }
   .pv-busy .note { color: rgba(255, 255, 255, .75); }
+  .pub-pv-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+  .pub-pv .pv-stage { width: min(260px, 100%); }
+  .pub-pv .pv-thumb { width: min(200px, 100%); border-radius: 10px; }
+  .pub-pv .pv-thumb[hidden] { display: none; }
   .pv-busy .bar { height: 6px; border-radius: 99px; background: rgba(255, 255, 255, .2); overflow: hidden; }
   .pv-busy .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
   .pv-info { display: grid; gap: 14px; min-width: 0; }
@@ -435,8 +480,8 @@
   .hdr-btn svg { color: var(--accent); }
   .hdr-btn .badge { font-size: 11px; font-weight: 800; min-width: 18px; padding: 0 6px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); }
   .hdr-btn .badge:empty { display: none; }
-  .dlg { width: min(660px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); box-shadow: 0 24px 60px rgba(10, 6, 20, .35); }
-  .dlg::backdrop { background: rgba(10, 6, 20, .45); backdrop-filter: blur(2px); }
+  .dlg { width: min(660px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); box-shadow: 0 24px 60px rgba(8, 10, 14, .35); }
+  .dlg::backdrop { background: rgba(8, 10, 14, .45); backdrop-filter: blur(2px); }
   .dlg-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
   .dlg-head h2 { margin: 0; font-size: 18px; letter-spacing: -.01em; }
   .icon-btn { border: 0; background: none; cursor: pointer; padding: 6px; border-radius: 8px; color: var(--muted); display: grid; place-items: center; }
@@ -455,8 +500,13 @@
   .dlg .narr { border: 0; padding: 0; }
   .dlg .narr-head b { display: none; }
   .ed-toolbar .btn svg { flex: none; }
-  .acct-group { display: grid; gap: 8px; }
-  .acct-group-head { display: flex; align-items: center; gap: 10px; }
+  .acct-group { display: block; border: 1px solid var(--border); border-radius: 14px; padding: 8px 10px; }
+  .acct-group[open] { padding-bottom: 10px; }
+  .acct-group > :not(summary) { margin-top: 8px; }
+  .acct-group-head { display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none; user-select: none; }
+  .acct-group-head::-webkit-details-marker { display: none; }
+  .acct-chev { flex: none; width: 16px; text-align: center; color: var(--muted); font-size: 16px; line-height: 1; transition: transform .15s; }
+  .acct-group[open] > .acct-group-head .acct-chev { transform: rotate(90deg); }
   .acct-group-head .note { flex: 1; }
   .pbadge { flex: none; width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 800; }
   .pbadge[data-p=youtube] { background: #ef4444; }
@@ -508,25 +558,91 @@
     .drop { padding: 20px; }
     .controls { grid-template-columns: 1fr; }
   }
+
+  /* ---------- Full-width editing bay ---------- */
+  main.wrap { padding-top: var(--gutter); padding-bottom: 32px; }
+  h2, h3, .dlg-head h2 { font-family: var(--display); letter-spacing: -.015em; }
+  .btn { border-radius: 10px; transition: background-color .12s, border-color .12s; }
+  .btn-ghost { background: var(--surface); }
+  .btn-ghost:hover { background: var(--surface-2); }
+  select, input[type=text], input[type=password], textarea { background: var(--surface); }
+  .clips .search input, .setup-bar, .timeline { background: var(--surface); }
+
+  /* Source / setup panel: saved videos on top, then import on the left and options on the right. */
+  #setup.card { margin: 0; padding: clamp(16px, 1.6vw, 24px); background: var(--surface); border-radius: var(--radius); font-size: inherit; gap: 16px 24px; }
+  #setup .drop { min-height: 100%; padding: 24px; border-radius: 12px; background: var(--surface-2); }
+  #setup .drop:hover, #setup .drop.over { background: var(--accent-soft); }
+  #setup .drop .icon { background: var(--marker); color: var(--on-marker); }
+  #setup .options .btn { min-height: 44px; }
+  @media (min-width: 1100px) {
+    #setup.card { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); grid-template-areas: "saved saved" "drop link" "drop options" "progress progress"; }
+    #saved { grid-area: saved; } #drop { grid-area: drop; } #link-form { grid-area: link; }
+    #setup .options { grid-area: options; } #progress { grid-area: progress; }
+  }
+  .saved-list { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+
+  /* Workspace: clips bin | viewer | inspector, edge to edge. */
+  #workspace { margin: 16px 0 0; gap: 16px; }
+  .timeline-head b { font-family: var(--display); }
+  .studio { gap: 16px; }
+  .editor { padding: 0; gap: 0; overflow: hidden; }
+  .editor > * { margin: 0; }
+  .ed-toolbar { padding: 10px 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+  .clip-meta { padding: 14px 18px 10px; }
+  .clip-meta h2 { font-size: 20px; }
+  .stage { margin: 0 18px; border-radius: 12px; background: var(--viewer) repeating-conic-gradient(#ffffff08 0 25%, transparent 0 50%) 0 0 / 20px 20px; padding: 20px; }
+  .frame { box-shadow: 0 0 0 1px #ffffff14, 0 18px 40px rgba(0,0,0,.45); }
+  .view-zoom { padding: 0 18px; margin-top: 10px; }
+  .scrub { padding: 8px 18px 16px; }
+  .controls { padding: 16px 18px 18px; border-top: 1px solid var(--border); }
+  .clip.active { box-shadow: inset 3px 0 0 var(--marker); }
+  .clips-head b { font-family: var(--display); font-size: 17px; }
+
+  @media (min-width: 1200px) {
+    .studio { grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); grid-template-areas: "bin editor"; }
+    .studio > .editor { grid-area: editor; }
+    .studio > .clips { grid-area: bin; position: sticky; top: calc(var(--head-h) + 16px); max-height: calc(100vh - var(--head-h) - 32px); }
+    .editor { grid-template-columns: minmax(0, 1fr) minmax(340px, 30vw); grid-template-rows: auto auto 1fr auto auto; grid-template-areas: "tools tools" "meta inspect" "stage inspect" "zoom inspect" "scrub inspect"; }
+    .ed-toolbar { grid-area: tools; } .clip-meta { grid-area: meta; } .stage { grid-area: stage; }
+    .view-zoom { grid-area: zoom; } .scrub { grid-area: scrub; }
+    .controls { grid-area: inspect; align-content: start; border-top: 0; border-left: 1px solid var(--border); background: color-mix(in srgb, var(--surface-2) 45%, var(--surface)); }
+    .stage { min-height: calc(100vh - var(--head-h) - 250px); }
+    .frame { width: min(100%, clamp(300px, calc((100vh - var(--head-h) - 300px) * 9 / 16), 500px)); }
+    .frame[data-aspect="1:1"] { width: min(100%, clamp(360px, calc(100vh - var(--head-h) - 300px), 760px)); }
+    .transcript { max-height: 220px; }
+  }
+  @media (min-width: 1600px) { .editor { grid-template-columns: minmax(0, 1fr) minmax(380px, 520px); } }
+  @media (max-width: 640px) { .stage { margin: 0 12px; padding: 12px; } .clip-meta, .controls { padding-left: 12px; padding-right: 12px; } }
 </style>
 </head>
 <body>
 <header>
   <div class="wrap">
     <div class="logo">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"/></svg>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="#15171c"><path d="M8 5v14l11-7z"/></svg>
     </div>
     <span class="brand">Clip Studio</span>
     <span class="spacer"></span>
     <span class="pill" id="api-pill">Checking transcription server…</span>
-    <button class="btn btn-ghost btn-sm hdr-btn" id="apps-btn" type="button" aria-haspopup="dialog">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4"/><path d="M10.4 12.6L20 3M16 7l3 3M14 9l2 2"/></svg> <span class="hdr-label">API credentials</span> <span class="badge" id="apps-count"></span>
-    </button>
-    <button class="btn btn-ghost btn-sm hdr-btn" id="accounts-btn" type="button" aria-haspopup="dialog">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c.8-3 3.2-4.6 6-4.6s5.2 1.6 6 4.6"/><path d="M16.5 5.2a3 3 0 0 1 0 5.6M18.5 14.6c1.3.7 2.1 2.2 2.5 4.4"/></svg> <span class="hdr-label">Accounts</span> <span class="badge" id="accounts-count"></span>
-    </button>
   </div>
 </header>
+
+<nav class="side-nav" id="side-nav" aria-label="Settings">
+  <div class="side-title">Settings</div>
+  <button class="side-btn" id="accounts-btn" type="button" aria-haspopup="dialog" title="Accounts">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c.8-3 3.2-4.6 6-4.6s5.2 1.6 6 4.6"/><path d="M16.5 5.2a3 3 0 0 1 0 5.6M18.5 14.6c1.3.7 2.1 2.2 2.5 4.4"/></svg>
+    <span class="side-label">Accounts</span> <span class="badge" id="accounts-count"></span>
+  </button>
+  <button class="side-btn" id="apps-btn" type="button" aria-haspopup="dialog" title="API credentials">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4"/><path d="M10.4 12.6L20 3M16 7l3 3M14 9l2 2"/></svg>
+    <span class="side-label">API credentials</span> <span class="badge" id="apps-count"></span>
+  </button>
+  <span class="spacer"></span>
+  <button class="side-btn side-toggle" id="side-toggle" type="button" aria-label="Collapse menu" title="Collapse menu">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+    <span class="side-label">Collapse</span>
+  </button>
+</nav>
 
 <dialog class="dlg" id="apps-dlg" aria-labelledby="apps-title">
   <div class="dlg-head">
@@ -646,9 +762,9 @@ A few words typed here before pressing the AI button tell it what to talk about.
         <label class="field">Length
           <select id="stock-len">
             <option value="15">~15 seconds</option>
-            <option value="30" selected>~30 seconds</option>
+            <option value="30">~30 seconds</option>
             <option value="45">~45 seconds</option>
-            <option value="60">~60 seconds</option>
+            <option value="60" selected>~60 seconds</option>
           </select>
         </label>
         <label class="field">Stock clips merged
@@ -827,6 +943,54 @@ A few words typed here before pressing the AI button tell it what to talk about.
         <small class="note" id="bn-note">Drag the image or the handle on the video to place them anywhere. Shift+click an image button to remove that image.</small>
       </div>
     </section>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn btn-primary" type="button" data-close>Done</button>
+  </div>
+</dialog>
+
+<dialog class="dlg wide" id="follow-dlg" aria-labelledby="follow-title" closedby="none">
+  <div class="dlg-head">
+    <h2 id="follow-title">Follow me</h2>
+    <button class="icon-btn" type="button" data-close aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+  <div class="dlg-body sc-layout">
+    <div class="sc-preview">
+      <canvas id="fm-canvas" aria-label="Preview of the Follow me scene in the finished short"></canvas>
+      <div class="sc-time">
+        <button class="btn btn-ghost btn-sm" id="fm-play" type="button" aria-label="Play the Follow me scene">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" id="fm-play-icon"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <input type="range" id="fm-time" min="0" max="1" step="0.05" value="0" aria-label="Time in the clip">
+        <span id="fm-t">0:00</span>
+      </div>
+      <small class="note">The short as it will be exported.</small>
+    </div>
+    <div class="teaser">
+      <div class="fm-src" id="fm-src"></div>
+      <label class="follow"><input type="checkbox" id="fm-on"> Show the Follow me scene in this clip</label>
+      <div class="more" id="fm-more">
+        <label class="field">When
+          <select id="fm-at">
+            <option value="">Account default</option>
+            <option value="start">Start of the clip</option>
+            <option value="middle">Middle</option>
+            <option value="end">End of the clip</option>
+            <option value="custom">At a specific time…</option>
+          </select>
+        </label>
+        <div class="field" id="fm-at-field">
+          <label for="fm-at-in">Starts at <span class="count" id="fm-at-v"></span></label>
+          <div class="ai-row">
+            <input type="text" id="fm-at-in" inputmode="decimal" placeholder="0:12" autocomplete="off" style="width: 90px" aria-label="Exact time in the clip (m:ss or seconds)">
+            <input type="range" id="fm-at-t" min="0" max="1" step="0.1" value="0" style="flex: 1; min-width: 120px" aria-label="When the Follow me scene starts">
+          </div>
+          <small class="note">Type the time in the clip (e.g. <b>0:12</b> or <b>12.5</b>), drag the slider, or use the playhead.</small>
+        </div>
+        <div class="ai-row"><button class="btn btn-ghost btn-sm" id="fm-here" type="button">Start it at the playhead</button></div>
+      </div>
+      <small class="note" id="fm-note"></small>
+    </div>
   </div>
   <div class="dlg-foot">
     <button class="btn btn-primary" type="button" data-close>Done</button>
@@ -1128,13 +1292,33 @@ A few words typed here before pressing the AI button tell it what to talk about.
       </div>
     </div>
 
+    <div class="thumb-box pub-pv" id="pub-pv" hidden>
+      <div class="thumb-head"><b>Final clip preview</b><small class="note" id="pub-pv-look"></small></div>
+      <div class="pub-pv-row">
+        <div class="pv-stage" id="pub-pv-stage">
+          <video id="pub-pv-video" controls playsinline></video>
+          <div class="pv-busy" id="pub-pv-busy">
+            <b id="pub-pv-busy-text">Rendering the final clip…</b>
+            <div class="bar"><i id="pub-pv-bar"></i></div>
+            <small class="note">It renders in real time: a 60 s clip takes about a minute. Keep this tab visible.</small>
+          </div>
+        </div>
+        <img class="pv-thumb" id="pub-pv-thumb" alt="Thumbnail that will be used" hidden>
+      </div>
+      <small class="note" id="pub-pv-note"></small>
+    </div>
+
     <small class="note" id="publish-note"></small>
     <div id="publish-status"></div>
   </section>
   </div>
   <div class="dlg-foot">
     <button class="btn btn-ghost" type="button" data-close>Cancel</button>
-    <button class="btn btn-primary" id="publish-btn" type="button">Publish to selected</button>
+    <button class="btn btn-ghost" id="pub-preview" type="button" title="Write the post text and thumbnail where missing, then render the final clip so you can watch it before uploading">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z"/></svg>
+      1. Generate &amp; preview
+    </button>
+    <button class="btn btn-primary" id="publish-btn" type="button">2. Publish to selected</button>
   </div>
 </dialog>
 
@@ -1144,7 +1328,7 @@ A few words typed here before pressing the AI button tell it what to talk about.
     <button class="icon-btn" type="button" data-close aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
   </div>
   <div class="dlg-body">
-    <p class="note">Tick the accounts to publish to, generate a thumbnail, title and description for every clip, read them over, then publish them all. Each clip renders in real time, so keep this tab visible while it runs.</p>
+    <p class="note">Tick the accounts to publish to, generate a thumbnail, title, description and final preview for every clip, read them over, then publish them all. The previewed clips are the files that get uploaded. Each clip renders in real time, so keep this tab visible while step 1 runs.</p>
     <div class="field">Publish to
       <div class="bulk-accts" id="bulk-accts"></div>
     </div>
@@ -1190,8 +1374,14 @@ A few words typed here before pressing the AI button tell it what to talk about.
       </div>
     </div>
     <div class="bulk-voice">
-      <label class="acct-pick"><input type="checkbox" id="bv-on"> <span><b>Voice-over</b> · the AI writes a narration script for each clip and reads it in the voice you pick</span></label>
+      <label class="acct-pick"><input type="checkbox" id="bv-on"> <span><b>Voice-over</b> · each clip's script is written by the AI or taken from the captions of its own audio, then read in the voice you pick</span></label>
       <div class="bulk-setup" id="bv-opts" hidden>
+        <label class="field">Script from
+          <select id="bv-src">
+            <option value="ai">AI writes it</option>
+            <option value="captions">Captions of the clip's audio</option>
+          </select>
+        </label>
         <label class="field">Style
           <select id="bv-style">
             <option value="hype">Hype</option>
@@ -1226,6 +1416,77 @@ A few words typed here before pressing the AI button tell it what to talk about.
       </div>
       <small class="note" id="bv-note"></small>
     </div>
+    <div class="bulk-voice" id="bulk-hook">
+      <label class="acct-pick"><input type="checkbox" id="bh-on"> <span><b>Text hook</b> · a scroll-stopping line on screen in every ticked clip, written by the AI or typed per clip, at one position for all</span></label>
+      <div class="bulk-setup" id="bh-opts" hidden>
+        <label class="field">Hook text
+          <select id="bh-src">
+            <option value="ai">AI writes the missing ones</option>
+            <option value="ai-all">AI rewrites every clip's hook</option>
+            <option value="keep">Keep each clip's own (type the rest)</option>
+            <option value="none">Remove the hook from every clip</option>
+          </select>
+        </label>
+        <label class="field">Highlight
+          <select id="bh-hi">
+            <option value="keep">As typed (*word* is highlighted)</option>
+            <option value="auto">AI hooks: highlight the key word</option>
+            <option value="off">No highlight</option>
+          </select>
+        </label>
+        <label class="field">Position <span class="count" id="bh-y-v"></span>
+          <input type="range" id="bh-y" min="3" max="80" value="7" aria-label="Hook position in every clip, top to bottom">
+        </label>
+      </div>
+      <small class="note" id="bh-note"></small>
+    </div>
+    <div class="bulk-voice" id="bulk-follow">
+      <label class="acct-pick"><input type="checkbox" id="bf-on"> <span><b>Follow me scene</b> · each account's Follow card (logo, handle, Follow button), shown for a few seconds in every ticked clip</span></label>
+      <div class="bulk-setup" id="bf-opts" hidden>
+        <label class="field">When
+          <select id="bf-at">
+            <option value="">Account default</option>
+            <option value="start">Start of each clip</option>
+            <option value="middle">Middle</option>
+            <option value="end">End of each clip</option>
+            <option value="custom">At a specific time…</option>
+          </select>
+        </label>
+        <label class="field" id="bf-t-field">Starts at, in each clip
+          <input type="text" id="bf-t" inputmode="decimal" placeholder="0:05" autocomplete="off" aria-label="Time in each clip (m:ss or seconds)">
+        </label>
+      </div>
+      <small class="note" id="bf-note"></small>
+    </div>
+    <div class="bulk-voice" id="bulk-track">
+      <label class="acct-pick"><input type="checkbox" id="bt-on"> <span><b>Follow the action</b> · the crop tracks faces (whoever is talking) and movement in every scene of every ticked clip, instead of a fixed crop</span></label>
+      <small class="note" id="bt-note"></small>
+    </div>
+    <div class="bulk-voice" id="bulk-sched">
+      <label class="acct-pick"><input type="checkbox" id="bs-on"> <span><b>Schedule</b> · the clips go live one after another at set times instead of all at once now</span></label>
+      <div class="bulk-setup" id="bs-opts" hidden>
+        <label class="field">First clip goes live
+          <input type="datetime-local" id="bs-start" aria-label="Date and time the first clip goes live">
+        </label>
+        <label class="field">Then the next clip every
+          <select id="bs-every">
+            <option value="0">Same time for all</option>
+            <option value="1">Hour</option>
+            <option value="2">2 hours</option>
+            <option value="3">3 hours</option>
+            <option value="4">4 hours</option>
+            <option value="6">6 hours</option>
+            <option value="8">8 hours</option>
+            <option value="12">12 hours</option>
+            <option value="24">Day</option>
+            <option value="48">2 days</option>
+            <option value="72">3 days</option>
+            <option value="168">Week</option>
+          </select>
+        </label>
+      </div>
+      <small class="note" id="bs-note"></small>
+    </div>
     <div class="bulk-bar">
       <label class="acct-pick"><input type="checkbox" id="bulk-all" checked> <span id="bulk-count">All clips</span></label>
       <label class="acct-pick"><input type="checkbox" id="bulk-redo"> <span>Rewrite text and thumbnails that are already done</span></label>
@@ -1238,7 +1499,7 @@ A few words typed here before pressing the AI button tell it what to talk about.
     <button class="btn btn-ghost" type="button" data-close>Close</button>
     <button class="btn btn-ghost" id="bulk-prepare" type="button">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z"/></svg>
-      1. Generate thumbnails &amp; info
+      1. Generate thumbnails, info &amp; previews
     </button>
     <button class="btn btn-primary" id="bulk-publish" type="button" disabled>2. Publish all</button>
   </div>
@@ -1277,8 +1538,6 @@ A few words typed here before pressing the AI button tell it what to talk about.
 </dialog>
 
 <main class="wrap">
-  <h1>Turn one long video into <span>short clips</span></h1>
-  <p class="lede">Drop a podcast, stream or talk. We scan the audio for hooks, reactions and high-energy stretches, score each moment, and let you reframe and export vertical clips.</p>
 
   <div class="card setup-bar" id="setup-bar" hidden>
     <div class="setup-bar-info">
@@ -1351,9 +1610,9 @@ A few words typed here before pressing the AI button tell it what to talk about.
       <label class="field">Clip length
         <select id="opt-len">
           <option value="15">~15 seconds</option>
-          <option value="30" selected>~30 seconds</option>
+          <option value="30">~30 seconds</option>
           <option value="45">~45 seconds</option>
-          <option value="60">~60 seconds</option>
+          <option value="60" selected>~60 seconds</option>
         </select>
       </label>
       <label class="field">Number of clips
@@ -1413,6 +1672,10 @@ A few words typed here before pressing the AI button tell it what to talk about.
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14M15 5v14"/></svg>
             Scenes
           </button>
+          <button class="btn btn-ghost btn-sm tb-tool" id="open-follow" type="button" aria-haspopup="dialog" title="A Follow me card with your account's logo and handle, shown for a few seconds">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M19 8v6M16 11h6"/></svg>
+            Follow me
+          </button>
           <button class="btn btn-ghost btn-sm tb-tool" id="open-hook" type="button" aria-haspopup="dialog" title="Open the short with its best 3–10 s">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>
             Hook intro
@@ -1443,6 +1706,7 @@ A few words typed here before pressing the AI button tell it what to talk about.
             <div class="ov ov-cap" id="ov-cap"></div>
             <div class="ov ov-auto" id="ov-auto"></div>
             <canvas class="ov-banner" id="ov-banner"></canvas>
+            <canvas class="ov-follow" id="ov-follow"></canvas>
             <i class="crop-handle" data-c="nw"></i><i class="crop-handle" data-c="ne"></i>
             <i class="crop-handle" data-c="sw"></i><i class="crop-handle" data-c="se"></i>
             <button class="play-btn" id="play" aria-label="Play clip">
@@ -1501,8 +1765,9 @@ A few words typed here before pressing the AI button tell it what to talk about.
             <select class="ai-lang" id="ai-lang" aria-label="Language for AI-written hook and caption" title="Language the AI writes in"></select>
             <small class="note" id="ai-note"></small>
           </div>
-          <label class="field">Hook text (top)
-            <input type="text" id="hook" placeholder="e.g. Nobody talks about this…" maxlength="80">
+          <label class="field">Hook text
+            <input type="text" id="hook" placeholder="e.g. Nobody talks about *this*…" maxlength="80">
+            <small class="note">Put *asterisks* around a word to highlight it. Drag the hook in the preview to move it.</small>
           </label>
           <label class="field">Captions
             <select id="cap-mode">
@@ -1511,6 +1776,9 @@ A few words typed here before pressing the AI button tell it what to talk about.
               <option value="custom">Custom text</option>
               <option value="off">Off</option>
             </select>
+          </label>
+          <label class="field full" id="hook-pos-field">Hook position <span class="count" id="hook-y-v"></span>
+            <input type="range" id="hook-y" min="3" max="80" value="7" aria-label="Hook position, top to bottom">
           </label>
           <label class="field full" id="cap-pos-field">Caption position <span class="count" id="cap-y-v"></span>
             <input type="range" id="cap-y" min="15" max="95" value="85" aria-label="Caption position, top to bottom">
@@ -2154,7 +2422,11 @@ function syncEditor() {
   $('#focus-y-v').textContent = moveY ? ((f.focusY ?? 50) < 45 ? 'up' : (f.focusY ?? 50) > 55 ? 'down' : 'middle') : 'zoom in or out first';
   renderScenes();
   applyFocus();
-  $('#ov-hook').textContent = c.hook;
+  renderHookPreview(c.hook);
+  const hookY = hookPos(c);
+  $('#hook-y').value = hookY;
+  $('#hook-y-v').textContent = hookY < 30 ? 'top' : hookY < 55 ? 'middle' : 'bottom';
+  $('#ov-hook').style.top = hookY + '%';
   syncTeaser(c);
   drawHookPreview();
   $('#ov-cap').innerHTML = '';
@@ -2167,6 +2439,8 @@ function syncEditor() {
   $('#ov-cap').style.bottom = $('#ov-auto').style.bottom = (100 - capY) + '%';
   renderAutoCap();
   drawBannerPreview();
+  syncFollow();
+  drawFollowPreview(true);
   $('#cap-mode').querySelector('[value=narration]').disabled = !narrReady(c);
   player.volume = narrReady(c) ? c.narr.orig : musicReady(c) ? c.music.orig ?? 1 : 1;
   narrAudio.volume = c.narr ? c.narr.vol : 1;
@@ -2244,6 +2518,8 @@ function playLoop() {
   syncMusic();
   updateScrub();
   drawWave();
+  drawFollowPreview();
+  drawFollowDlg();
   if (!player.paused) requestAnimationFrame(playLoop);
 }
 
@@ -2265,7 +2541,7 @@ player.addEventListener('timeupdate', () => {
   updateScrub();
   drawWave();
 });
-player.addEventListener('seeked', () => { applyFocus(); renderAutoCap(); highlightTranscript(); syncNarr(); syncMusic(true); });
+player.addEventListener('seeked', () => { applyFocus(); renderAutoCap(); highlightTranscript(); syncNarr(); syncMusic(true); drawFollowPreview(); drawFollowDlg(); });
 $('#scrub').addEventListener('click', e => {
   state.teaserPlay = null;
   const c = state.clips[state.sel], r = e.currentTarget.getBoundingClientRect();
@@ -2941,22 +3217,26 @@ $('#hook-dlg').addEventListener('close', e => { if (e.currentTarget.open) return
 $('#cap').addEventListener('input', e => { state.clips[state.sel].cap = e.target.value; syncEditor(); });
 $('#cap-mode').addEventListener('change', e => { state.clips[state.sel].capMode = e.target.value; syncEditor(); });
 $('#cap-y').addEventListener('input', e => { state.clips[state.sel].capY = +e.target.value; syncEditor(); });
+$('#hook-y').addEventListener('input', e => { state.clips[state.sel].hookY = +e.target.value; syncEditor(); });
 
-// Drag a caption in the preview to move it up or down (same as the Caption position slider).
-['#ov-cap', '#ov-auto'].forEach(sel => {
+// Drag a caption or the hook in the preview to move it up or down (same as the position sliders).
+['#ov-cap', '#ov-auto', '#ov-hook'].forEach(sel => {
+  const isHook = sel === '#ov-hook';
   const el = $(sel), frame = $('#frame');
   let drag = null;
   el.addEventListener('pointerdown', e => {
     const c = state.clips[state.sel];
     if (e.button !== 0 || !c) return;
     e.stopPropagation(); // don't pan the picture underneath
-    drag = { y: e.clientY, from: capPos(c), h: frame.getBoundingClientRect().height };
+    drag = { y: e.clientY, from: isHook ? hookPos(c) : capPos(c), h: frame.getBoundingClientRect().height };
     el.setPointerCapture(e.pointerId);
     el.classList.add('dragging');
   });
   el.addEventListener('pointermove', e => {
     if (!drag) return;
-    state.clips[state.sel].capY = Math.round(clamp(drag.from + (e.clientY - drag.y) / drag.h * 100, 15, 95));
+    const v = drag.from + (e.clientY - drag.y) / drag.h * 100;
+    if (isHook) state.clips[state.sel].hookY = Math.round(clamp(v, 3, 80));
+    else state.clips[state.sel].capY = Math.round(clamp(v, 15, 95));
     syncEditor();
   });
   const end = () => { drag = null; el.classList.remove('dragging'); };
@@ -3019,6 +3299,16 @@ async function clipFrames(c, n = 3, width = 512) {
 }
 
 async function aiWrite(c) {
+  const j = await aiCaption(c);
+  c.hook = j.hook;
+  c.cap = j.caption;
+  // Speech clips keep word-by-word captions at the bottom; speechless ones show the AI caption there.
+  if (!state.words.length || c.capMode === 'off') c.capMode = 'custom';
+  return j.model;
+}
+
+// The AI's hook and caption for clip c, without changing the clip.
+async function aiCaption(c) {
   const res = await fetch('/api/caption', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Clip-Studio': '1' },
@@ -3031,11 +3321,7 @@ async function aiWrite(c) {
   const j = await res.json();
   if (!res.ok) throw new Error(j.detail || `server error ${res.status}`);
   state.aiWarm = true;
-  c.hook = j.hook;
-  c.cap = j.caption;
-  // Speech clips keep word-by-word captions at the bottom; speechless ones show the AI caption there.
-  if (!state.words.length || c.capMode === 'off') c.capMode = 'custom';
-  return j.model;
+  return j;
 }
 
 function aiUnavailable(note) {
@@ -3128,8 +3414,9 @@ const bannerLogo = new Image(), bannerImg = new Image();
 bannerLogo.onload = bannerImg.onload = () => drawBannerPreview();
 if (banner.logo) bannerLogo.src = banner.logo;
 if (banner.img) bannerImg.src = banner.img;
+delete banner.follow;
 function saveBanner() {
-  try { localStorage.setItem('clipstudio:banner', JSON.stringify(banner)); return true; }
+  try { localStorage.setItem('clipstudio:banner', JSON.stringify({ ...banner, follow: undefined })); return true; }
   catch { $('#bn-note').textContent = "This browser couldn't save the banner (storage full); it works until you reload. Try a smaller image."; return false; }
 }
 const BN_MARGIN = 0.035; // gap between the handle and the frame edge, share of the short side
@@ -3251,6 +3538,232 @@ function renderBanner() {
 }
 function bannerChanged() { saveBanner(); renderBanner(); }
 
+// ---------- "Follow me" scene: a card with the account's logo, handle and a Follow button, for a few seconds ----------
+// Its look and default timing are saved with each account (Accounts → Edit → Follow me scene). Each clip can turn
+// it off or move it (c.fm = { off?, at?: 'start'|'middle'|'end'|seconds into the clip }). When publishing, every
+// account gets its own card; the editor shows the card of the banner's account, else the first account with one.
+const FM_DEFAULTS = { text: 'Follow for more', btn: 'Follow', at: 'end', dur: 3 };
+const FM_AT = { start: 'start', middle: 'middle', end: 'end' };
+const followLogos = new Map();
+function followLogo(src) {
+  if (!followLogos.has(src)) { const im = new Image(); im.onload = () => { drawFollowPreview(true); drawFollowDlg(); }; im.src = src; followLogos.set(src, im); }
+  return followLogos.get(src);
+}
+function followOf(a) {
+  if (!a?.follow_on) return null;
+  return { acct: a.id, text: a.follow_text || FM_DEFAULTS.text, btn: a.follow_btn || FM_DEFAULTS.btn,
+    at: a.follow_at || FM_DEFAULTS.at, dur: a.follow_dur || FM_DEFAULTS.dur, handle: accountHandle(a), logo: a.brand_logo || '' };
+}
+const followAccount = () => {
+  const on = (state.accounts || []).filter(a => a.follow_on);
+  return on.find(a => a.id === banner.acct) || on.find(a => a.connected && state.picks?.[a.id]) || on[0] || null;
+};
+// While publishing, banner.follow holds the card of the account being rendered (null: that account has none).
+const lookFollow = () => banner.follow !== undefined ? banner.follow : followOf(followAccount());
+function clipFollow(c) {
+  return c && !c.fm?.off ? lookFollow() : null;
+}
+// When the card shows, in seconds from the clip start: { t0, dur }, or null when the clip is too short.
+function followWindow(c, f) {
+  const len = c.end - c.start, dur = Math.min(f.dur, len - 0.5);
+  if (dur < 1.2) return null;
+  const at = c.fm?.at ?? f.at, room = len - dur;
+  const t0 = typeof at === 'number' ? clamp(at, 0, room) : at === 'start' ? Math.min(0.5, room) : at === 'middle' ? room / 2 : Math.max(0, room - 0.2);
+  return { t0, dur };
+}
+const easeOutBack = x => 1 + 2.2 * Math.pow(x - 1, 3) + 1.2 * Math.pow(x - 1, 2);
+// Draws the card at `t` seconds into its `dur`: pops in, the button pulses, then fades out.
+function drawFollow(g, W, H, f, t, dur) {
+  if (t < 0 || t > dur) return;
+  const fin = clamp(t / 0.35, 0, 1), fout = clamp((dur - t) / 0.3, 0, 1), k = Math.min(fin, fout);
+  const scale = (0.8 + 0.2 * easeOutBack(fin)) * (0.94 + 0.06 * fout);
+  const u = Math.min(W, H) / 100, font = (w, px) => `${w} ${px}px "Plus Jakarta Sans", sans-serif`;
+  g.save();
+  g.fillStyle = `rgba(0,0,0,${0.45 * k})`;
+  g.fillRect(0, 0, W, H);
+  const cw = Math.min(W * 0.8, 78 * u), pad = 6 * u, d = 24 * u, maxW = cw - 2 * pad;
+  const hs = 6.4 * u, ts = 4.4 * u, bh = 11 * u, bs = 5 * u;
+  g.font = font(800, hs);
+  let handle = f.handle || '';
+  while (handle.length > 3 && g.measureText(handle).width > maxW) handle = handle.slice(0, -2) + '…';
+  g.font = font(600, ts);
+  const lines = f.text ? wrapLines(g, f.text, maxW).slice(0, 3) : [];
+  const ch = d / 2 + 3 * u + (handle ? hs * 1.3 : 0) + lines.length * ts * 1.35 + 4 * u + bh + pad;
+  g.translate(W / 2, H * 0.5);
+  g.scale(scale, scale);
+  g.globalAlpha = k;
+  const x = -cw / 2, y = -ch / 2 + d / 4;
+  g.shadowColor = 'rgba(0,0,0,.35)'; g.shadowBlur = 6 * u; g.shadowOffsetY = 1.5 * u;
+  g.fillStyle = '#fff';
+  g.beginPath(); g.roundRect ? g.roundRect(x, y, cw, ch, 5 * u) : g.rect(x, y, cw, ch); g.fill();
+  g.shadowColor = 'transparent';
+  // Logo (or the handle's first letter) in a circle across the card's top edge.
+  const logo = f.logo && followLogo(f.logo), r = d / 2;
+  g.fillStyle = '#fff';
+  g.beginPath(); g.arc(0, y, r + 1.2 * u, 0, Math.PI * 2); g.fill();
+  g.save();
+  g.beginPath(); g.arc(0, y, r, 0, Math.PI * 2); g.clip();
+  if (logo && ready(logo)) g.drawImage(logo, -r, y - r, d, d);
+  else {
+    const gr = g.createLinearGradient(-r, y - r, r, y + r);
+    gr.addColorStop(0, '#8b5cf6'); gr.addColorStop(1, '#ec4899');
+    g.fillStyle = gr; g.fillRect(-r, y - r, d, d);
+    g.fillStyle = '#fff'; g.font = font(800, d * 0.48); g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText((handle.replace(/^@/, '')[0] || '★').toUpperCase(), 0, y + d * 0.03);
+  }
+  g.restore();
+  g.textAlign = 'center'; g.textBaseline = 'top';
+  let ty = y + r + 3 * u;
+  if (handle) { g.fillStyle = '#111'; g.font = font(800, hs); g.fillText(handle, 0, ty); ty += hs * 1.3; }
+  g.fillStyle = '#555'; g.font = font(600, ts);
+  for (const l of lines) { g.fillText(l, 0, ty); ty += ts * 1.35; }
+  ty += 4 * u;
+  // The button pulses twice once the card has popped in.
+  const pulse = t > 0.5 && t < 1.75 ? 1 + 0.06 * Math.max(0, Math.sin((t - 0.5) * Math.PI * 2.4)) : 1;
+  g.font = font(800, bs);
+  const label = f.btn ? '+ ' + f.btn : '+', bw = Math.min(maxW, g.measureText(label).width + 10 * u);
+  g.save();
+  g.translate(0, ty + bh / 2); g.scale(pulse, pulse);
+  g.fillStyle = '#ff2d55';
+  g.beginPath(); g.roundRect ? g.roundRect(-bw / 2, -bh / 2, bw, bh, bh / 2) : g.rect(-bw / 2, -bh / 2, bw, bh); g.fill();
+  g.fillStyle = '#fff'; g.textBaseline = 'middle';
+  g.fillText(label, 0, bs * 0.05, maxW - 4 * u);
+  g.restore();
+  g.restore();
+}
+// The card for clip `c` at source time `time`, as drawn by drawFrame (preview, Scenes, Hook intro and export).
+function drawClipFollow(g, W, H, c, time) {
+  const f = clipFollow(c), w = f && followWindow(c, f);
+  if (w) drawFollow(g, W, H, f, time - c.start - w.t0, w.dur);
+}
+// Main preview: its own canvas above the captions, redrawn every frame only while the card is (or was) up.
+let followShown = false;
+function drawFollowPreview(force = false) {
+  const c = state.clips?.[state.sel], f = clipFollow(c), w = f && followWindow(c, f);
+  const t = c ? player.currentTime - c.start - (w?.t0 ?? 0) : -1, show = !!w && !state.teaserPlay && t >= 0 && t <= w.dur;
+  if (!show && !followShown && !force) return;
+  followShown = show;
+  const cv = $('#ov-follow'), fr = $('#frame'), dpr = devicePixelRatio || 1, W = fr.clientWidth, H = fr.clientHeight;
+  if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  if (show) drawFollow(g, W, H, f, t, w.dur);
+}
+addEventListener('resize', () => drawFollowPreview(true));
+
+// The Follow me dialog: per-clip on/off and timing, with a small preview of the finished short.
+function syncFollow() {
+  const c = state.clips?.[state.sel];
+  if (!c) return;
+  const a = followAccount(), f = clipFollow(c), w = f && followWindow(c, f), len = c.end - c.start;
+  $('#open-follow').classList.toggle('on', !!w);
+  if (!$('#follow-dlg').open) return;
+  const src = $('#fm-src');
+  src.innerHTML = '';
+  if (a) {
+    if (a.brand_logo) src.append(el('img', { src: a.brand_logo, alt: '' }));
+    src.append(el('div', { className: 'grow' }, el('b', { textContent: accountHandle(a) }), el('br'),
+      el('small', { className: 'note', textContent: `From ${a.label} (${PLATFORM_NAMES[a.platform]}). Each account you publish to gets its own card.` })));
+  } else src.append(el('small', { className: 'note grow', textContent: "No account has a Follow me scene yet. Edit an account and tick Follow me scene → Add it to clips by default." }));
+  src.append(el('button', { className: 'btn btn-ghost btn-sm', type: 'button', textContent: a ? 'Edit' : 'Accounts…',
+    onclick: () => { $('#follow-dlg').close(); a ? openAccounts(a.platform, a) : openAccounts(); } }));
+  $('#fm-on').disabled = !a;
+  $('#fm-on').checked = !!a && !c.fm?.off;
+  $('#fm-more').hidden = !f;
+  const at = c.fm?.at;
+  $('#fm-at').value = typeof at === 'number' ? 'custom' : at || '';
+  $('#fm-at').options[0].textContent = `Account default (${FM_AT[a?.follow_at || FM_DEFAULTS.at]})`;
+  $('#fm-at-field').hidden = typeof at !== 'number';
+  const s = $('#fm-at-t');
+  s.max = Math.max(0, len - (f?.dur ?? 3));
+  if (w) {
+    s.value = w.t0;
+    $('#fm-at-v').textContent = `${fmt(w.t0)} – ${fmt(w.t0 + w.dur)}`;
+    if (document.activeElement !== $('#fm-at-in')) $('#fm-at-in').value = fmtTenths(w.t0);
+  }
+  $('#fm-note').textContent = !a ? '' : c.fm?.off ? 'Off for this clip.'
+    : !w ? 'This clip is too short for the Follow me scene.'
+    : `Shows from ${fmt(w.t0)} to ${fmt(w.t0 + w.dur)} of the clip, over the video (the sound keeps playing).`;
+  drawFollowDlg();
+}
+function drawFollowDlg() {
+  const c = state.clips?.[state.sel];
+  if (!$('#follow-dlg').open || !c) return;
+  const cv = $('#fm-canvas'), [W, H] = DIMS[state.aspect], dpr = devicePixelRatio || 1;
+  const cw = Math.round(230 * dpr), ch = Math.round(230 * H / W * dpr);
+  if (cv.width !== cw || cv.height !== ch) { cv.width = cw; cv.height = ch; }
+  try { drawFrame(cv.getContext('2d'), player, cw, ch, c); } catch {}
+  const s = $('#fm-time');
+  s.min = c.start; s.max = c.end;
+  if (document.activeElement !== s) s.value = player.currentTime;
+  $('#fm-t').textContent = `${fmt(player.currentTime - c.start)} / ${fmt(c.end - c.start)}`;
+}
+function followChanged() { syncFollow(); drawFollowPreview(true); }
+const showFollowAt = c => {
+  const f = clipFollow(c), w = f && followWindow(c, f);
+  if (w) player.currentTime = c.start + w.t0 + Math.min(1, w.dur / 2);
+};
+function openFollow() {
+  player.pause();
+  state.teaserPlay = null;
+  showFollowAt(state.clips[state.sel]);
+  syncFollow();
+}
+$('#fm-on').addEventListener('change', e => {
+  const c = state.clips[state.sel];
+  c.fm = { ...c.fm, off: !e.target.checked };
+  if (!c.fm.off) delete c.fm.off;
+  followChanged();
+  showFollowAt(c);
+});
+$('#fm-at').addEventListener('change', e => {
+  const c = state.clips[state.sel], f = clipFollow(c), v = e.target.value;
+  const cur = f && followWindow(c, f);
+  c.fm = { ...c.fm };
+  if (v === 'custom') c.fm.at = Math.round((cur?.t0 ?? 0) * 10) / 10;
+  else if (v) c.fm.at = v; else delete c.fm.at;
+  followChanged();
+  showFollowAt(c);
+});
+$('#fm-at-t').addEventListener('input', e => {
+  const c = state.clips[state.sel];
+  c.fm = { ...c.fm, at: Math.round(+e.target.value * 10) / 10 };
+  followChanged();
+  showFollowAt(c);
+});
+// "0:12", "1:05.5" or "12.5" → seconds; NaN when it can't be read.
+function parseClipTime(v) {
+  const parts = String(v).trim().replace(',', '.').split(':');
+  if (!parts[0] || parts.length > 3 || parts.some(p => !/^\d+(\.\d+)?$/.test(p))) return NaN;
+  return parts.reduce((t, p) => t * 60 + +p, 0);
+}
+const fmtTenths = t => { const r = Math.round(t * 10) / 10; return fmt(r) + (r % 1 ? '.' + Math.round(r % 1 * 10) : ''); };
+$('#fm-at-in').addEventListener('change', e => {
+  const c = state.clips[state.sel], t = parseClipTime(e.target.value);
+  if (isNaN(t)) { $('#fm-note').textContent = 'Write the time as m:ss (e.g. 0:12) or in seconds (e.g. 12.5).'; return; }
+  c.fm = { ...c.fm, at: Math.round(clamp(t, 0, c.end - c.start) * 10) / 10 };
+  e.target.blur();
+  followChanged();
+  showFollowAt(c);
+});
+$('#fm-at-in').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.dispatchEvent(new Event('change')); });
+$('#fm-here').addEventListener('click', () => {
+  const c = state.clips[state.sel];
+  c.fm = { ...c.fm, at: Math.round(clamp(player.currentTime - c.start, 0, c.end - c.start) * 10) / 10 };
+  followChanged();
+});
+$('#fm-time').addEventListener('input', e => { player.currentTime = +e.target.value; });
+$('#fm-play').addEventListener('click', () => {
+  const c = state.clips[state.sel], f = clipFollow(c), w = f && followWindow(c, f);
+  if (player.paused && w) { state.teaserPlay = null; player.currentTime = Math.max(c.start, c.start + w.t0 - 1); player.play(); }
+  else $('#play').click();
+});
+player.addEventListener('play', () => { $('#fm-play-icon').innerHTML = '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>'; });
+player.addEventListener('pause', () => { $('#fm-play-icon').innerHTML = '<path d="M8 5v14l11-7z"/>'; drawFollowDlg(); });
+$('#follow-dlg').addEventListener('close', () => player.pause());
+
 const hasBranding = a => !!(a.brand_banner || a.brand_logo);
 // The @name drawn for an account: the one saved with its branding, else its channel handle or username
 // (also before it's connected), else its name in Clip Studio.
@@ -3271,7 +3784,8 @@ async function setBranding(b) {
     // decode() can hang in some browsers; after 3 s go on (the image is usually ready by then anyway).
     return Promise.race([im.decode().catch(() => {}), new Promise(r => setTimeout(r, 3000))]);
   };
-  await Promise.all([load(bannerImg, banner.img), load(bannerLogo, banner.logo)]);
+  await Promise.all([load(bannerImg, banner.img), load(bannerLogo, banner.logo),
+    banner.follow?.logo && load(followLogo(banner.follow.logo), banner.follow.logo)]);
 }
 function useAccountBranding(a) {
   setBranding(brandingOf(a));
@@ -3737,7 +4251,7 @@ function captionScript(c) {
     if (ws.length) lines.push(`${fmtStamp(Math.max(0, ws[0].s - c.start))} ${ws.map(w => w.w).join(' ')}`);
   }
   if (lines.length) return { text: lines.join('\n'), from: 'transcript', count: lines.length };
-  const typed = [c.hook, c.capMode === 'custom' ? c.cap : ''].map(x => (x || '').trim()).filter(Boolean);
+  const typed = [hookPlain(c.hook), c.capMode === 'custom' ? c.cap : ''].map(x => (x || '').trim()).filter(Boolean);
   return typed.length ? { text: `[0:00] ${typed.join('. ').replace(/([.!?…])\./g, '$1')}`, from: 'typed', count: 1 } : null;
 }
 
@@ -4267,6 +4781,29 @@ function pickMime() {
   return opts.find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
 }
 
+// Hook text can mark words to highlight with asterisks: "This *changed* everything" or "*one word*".
+function hookWords(text) {
+  const out = [];
+  let on = false;
+  for (const raw of (text || '').split(/\s+/).filter(Boolean)) {
+    const open = raw.startsWith('*'), close = raw.length > 1 && raw.endsWith('*');
+    const w = raw.replace(/\*/g, '');
+    if (open) on = true;
+    if (w) out.push({ w, hi: on });
+    if (close || (open && raw.length === 1)) on = false;
+  }
+  return out;
+}
+function hookPlain(text) { return (text || '').replace(/\*/g, '').replace(/\s{2,}/g, ' ').trim(); }
+function renderHookPreview(text) {
+  const box = $('#ov-hook');
+  box.textContent = '';
+  hookWords(text).forEach((t, i) => {
+    if (i) box.append(' ');
+    if (t.hi) { const b = document.createElement('b'); b.textContent = t.w; box.append(b); } else box.append(t.w);
+  });
+}
+
 function wrapLines(g, text, maxW) {
   const words = text.split(/\s+/).filter(Boolean), lines = [];
   let line = '';
@@ -4279,6 +4816,9 @@ function wrapLines(g, text, maxW) {
 }
 
 // Where the caption's bottom edge sits, in % of the frame height from the top. Defaults match the old fixed spots.
+// Where the hook's top edge sits, in % of the frame height.
+function hookPos(c) { return c.hookY ?? 7; }
+
 function capPos(c) {
   return c.capY ?? (c.capMode === 'custom' ? 87 : 84);
 }
@@ -4306,12 +4846,36 @@ function drawFrame(g, v, W, H, c, intro = false) {
   if (c.hook) {
     g.font = `800 ${7 * unit}px "Plus Jakarta Sans", sans-serif`;
     g.textBaseline = 'top';
-    let y = H * 0.07;
-    for (const l of wrapLines(g, c.hook, maxW)) {
-      g.lineWidth = 1.8 * unit; g.strokeStyle = '#000'; g.strokeText(l, W / 2, y);
-      g.fillStyle = '#fff'; g.fillText(l, W / 2, y);
+    g.textAlign = 'left';
+    const space = g.measureText(' ').width, lines = [[]];
+    const fs = 7 * unit;
+    let y = H * hookPos(c) / 100, lineW = 0;
+    for (const t of hookWords(c.hook)) {
+      const ww = g.measureText(t.w).width;
+      if (lineW && lineW + space + ww > maxW) { lines.push([]); lineW = 0; }
+      lines.at(-1).push({ ...t, ww });
+      lineW += (lineW ? space : 0) + ww;
+    }
+    for (const line of lines) {
+      let x = W / 2 - (line.reduce((a, t) => a + t.ww, 0) + space * (line.length - 1)) / 2;
+      line.forEach((t, i) => {
+        if (t.hi) {
+          // Yellow marker box; it runs on through the space when the next word is highlighted too.
+          const pad = fs * 0.14, w = t.ww + pad * 2 + (line[i + 1]?.hi ? space - pad * 2 : 0);
+          g.fillStyle = '#facc15';
+          g.beginPath();
+          g.roundRect ? g.roundRect(x - pad, y - fs * 0.06, w, fs * 1.2, fs * 0.16) : g.rect(x - pad, y - fs * 0.06, w, fs * 1.2);
+          g.fill();
+          g.fillStyle = '#111'; g.fillText(t.w, x, y);
+        } else {
+          g.lineWidth = 1.8 * unit; g.strokeStyle = '#000'; g.strokeText(t.w, x, y);
+          g.fillStyle = '#fff'; g.fillText(t.w, x, y);
+        }
+        x += t.ww + space;
+      });
       y += 8 * unit;
     }
+    g.textAlign = 'center';
   }
   if (c.capMode === 'auto' || (c.capMode === 'narration' && !intro)) {
     const cap = c.capMode === 'auto' ? captionAt(v.currentTime) : captionAt(v.currentTime, narrChunks(c));
@@ -4332,6 +4896,7 @@ function drawFrame(g, v, W, H, c, intro = false) {
       y += lh;
     }
   }
+  if (!intro) drawClipFollow(g, W, H, c, v.currentTime);
 }
 
 // Matches the .ov-auto preview: white words with black outline, the spoken word in yellow.
@@ -4389,6 +4954,10 @@ async function exportClip() {
   endExport();
 }
 
+function followKey(c) {
+  const f = clipFollow(c), w = f && followWindow(c, f);
+  return w && [f.text, f.btn, f.handle, f.logo.length, f.logo.slice(-48), w.t0, w.dur];
+}
 // Renders the selected clip with its crop and text. Reuses the last render if nothing changed.
 let lastRender = null;
 async function renderClip() {
@@ -4396,18 +4965,24 @@ async function renderClip() {
   const c = state.clips[state.sel], idx = state.sel;
   const res = +$('#export-res').value;
   // A voice-over that's on but not generated yet (or edited since) is made now.
+  // A render made earlier (this session or saved from a previous one) is reused before anything is made.
+  const reuse = k => {
+    if (lastRender && lastRender.key === k) return lastRender;
+    const kept = c._renders?.get(k) || storedRenders.get(k);
+    if (kept) (c._renders ||= new Map()).set(k, kept);
+    return kept ? (lastRender = kept) : null;
+  };
+  const before = reuse(renderKey(c));
+  if (before) return before;
   if (c.narr?.on && c.narr.text.trim() && (!c.narr.audio || narrStale(c))) {
     $('#export-note').textContent = 'Making the voice…';
     await generateNarr(c);
     syncEditor();
   }
+  const key = renderKey(c);
+  const again = reuse(key);
+  if (again) return again;
   const narr = narrReady(c) ? c.narr : null;
-  const key = JSON.stringify([state.file.name, state.aspect, res, c.start, c.end, c.focus, c.focusY, c.zoom, !!c.follow,
-    scenesOf(c).map(s => [s.t, s.focus, s.focusY, s.zoom, !!s.follow, s.trans]), shotsOf(c).map(s => s.layers || []), c.hook, c.cap, c.capMode, capPos(c), teaserOf(c),
-    narr && [narr.audio.key, narr.orig, narr.vol], musicReady(c) && [c.music.id, c.music.vol, c.music.from, c.music.orig], banner.on && [banner.text, banner.logo.length, banner.logo.slice(-48), banner.x, banner.y, banner.style, banner.size, banner.alpha,
-      banner.img.length, banner.img.slice(-48), banner.ix, banner.iy, banner.iw, banner.ialpha]]);
-  if (lastRender && lastRender.key === key) return lastRender;
-  if (c._render?.key === key) return (lastRender = c._render);  // previewed in Publish all, nothing changed since
   const [W, H] = exportDims(state.aspect, res);
   player.pause();
   state.exporting = true;
@@ -4415,7 +4990,25 @@ async function renderClip() {
   $('#export-row').classList.add('busy');
   $('#export-bar').style.width = '0%';
   $('#export-note').textContent = 'Rendering…';
+  return renderClipNow(c, idx, res, key, narr, W, H);
+}
 
+// Everything that changes the rendered file, for clip c with the current banner / Follow me look and export size.
+// The voice-over by its script and voice settings (not the generated audio, which isn't kept across reloads),
+// so a saved render still matches after reopening; renderClip makes the audio first whenever it really renders.
+const narrRenderKey = c => {
+  const n = c.narr;
+  return n?.on && (n.audio || n.text?.trim()) ? [narrKey(n), n.orig, n.vol] : null;
+};
+function renderKey(c) {
+  const res = +$('#export-res').value;
+  return JSON.stringify([state.file.name, state.aspect, res, c.start, c.end, c.focus, c.focusY, c.zoom, !!c.follow,
+    scenesOf(c).map(s => [s.t, s.focus, s.focusY, s.zoom, !!s.follow, s.trans]), shotsOf(c).map(s => s.layers || []), c.hook, hookPos(c), c.cap, c.capMode, capPos(c), teaserOf(c),
+    narrRenderKey(c), musicReady(c) && [c.music.id, c.music.vol, c.music.from, c.music.orig], banner.on && [banner.text, banner.logo.length, banner.logo.slice(-48), banner.x, banner.y, banner.style, banner.size, banner.alpha,
+      banner.img.length, banner.img.slice(-48), banner.ix, banner.iy, banner.iw, banner.ialpha], followKey(c)]);
+}
+
+async function renderClipNow(c, idx, res, key, narr, W, H) {
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const g = canvas.getContext('2d');
@@ -4563,21 +5156,73 @@ async function renderClip() {
   return lastRender;
 }
 
-// Each clip keeps its latest render (so a clip previewed in Publish all isn't rendered twice);
-// only the most recent few are kept, since every render is tens of MB.
-const keptRenders = [];
+// Each clip keeps its renders by settings (one per branding look): the previews are the files that get published.
+// Only the most recent ones are kept, since every render is tens of MB.
+const keptRenders = [];  // [clip, key], oldest first
+// Renders are also saved in this browser (IndexedDB), so a preview made before a reload is published as is.
+const storedRenders = new Map();  // key -> render, loaded from IndexedDB at startup
+const RENDER_DB_MAX = 30;
+const renderDB = (() => {
+  let p;
+  return () => p ||= new Promise((ok, fail) => {
+    const rq = indexedDB.open('clipstudio-renders', 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore('renders', { keyPath: 'key' });
+    rq.onsuccess = () => ok(rq.result);
+    rq.onerror = () => fail(rq.error);
+  });
+})();
+const idbDone = rq => new Promise((ok, fail) => { rq.onsuccess = () => ok(rq.result); rq.onerror = () => fail(rq.error); });
+async function loadStoredRenders() {
+  try {
+    const db = await renderDB();
+    const all = await idbDone(db.transaction('renders').objectStore('renders').getAll());
+    for (const r of all) if (!storedRenders.has(r.key)) storedRenders.set(r.key, r);
+    if (typeof syncBulkButtons === 'function' && bulkDlg?.open) syncBulkButtons();
+  } catch (e) { console.warn('saved renders unavailable', e); }
+}
+async function storeRender(r) {
+  storedRenders.set(r.key, r);
+  try {
+    const db = await renderDB(), { key, blob, upscale, source, dropped, holds, filename } = r;
+    const st = db.transaction('renders', 'readwrite').objectStore('renders');
+    await idbDone(st.put({ key, blob, upscale, source, dropped, holds, filename, at: Date.now() }));
+    const all = await idbDone(db.transaction('renders').objectStore('renders').getAll());
+    all.sort((a, b) => a.at - b.at);
+    if (all.length > RENDER_DB_MAX) {
+      const del = db.transaction('renders', 'readwrite').objectStore('renders');
+      for (const o of all.slice(0, all.length - RENDER_DB_MAX)) { del.delete(o.key); storedRenders.delete(o.key); }
+    }
+  } catch (e) { console.warn('could not save the render', e); }
+}
+loadStoredRenders();
+
 function keepRender(c, r) {
-  if (c._render?.url) URL.revokeObjectURL(c._render.url);
-  c._render = r;
-  const i = keptRenders.indexOf(c);
+  (c._renders ||= new Map()).set(r.key, r);
+  storeRender(r);
+  const i = keptRenders.findIndex(([x, k]) => x === c && k === r.key);
   if (i >= 0) keptRenders.splice(i, 1);
-  keptRenders.push(c);
-  while (keptRenders.length > 8) {
-    const old = keptRenders.shift();
-    if (old._render?.url) URL.revokeObjectURL(old._render.url);
-    old._render = null;
+  keptRenders.push([c, r.key]);
+  while (keptRenders.length > 30) {
+    const [old, k] = keptRenders.shift(), o = old._renders?.get(k);
+    if (o?.url) { URL.revokeObjectURL(o.url); delete o.url; }  // the saved copy makes a new one when shown again
+    old._renders?.delete(k);
   }
 }
+
+// The previewed render of clip c with this branding look, or null when it hasn't been previewed
+// (or something in it changed since). Publishing uploads exactly this file.
+function previewOf(c, look) {
+  if (!c) return null;
+  const keep = Object.fromEntries(Object.keys(look).map(k => [k, banner[k]]));
+  Object.assign(banner, look);
+  try {
+    const k = renderKey(c), r = c._renders?.get(k) || storedRenders.get(k) || null;
+    if (r) (c._renders ||= new Map()).set(k, r);
+    return r;
+  } finally { Object.assign(banner, keep); }
+}
+// The branding looks of these accounts that clip c has no up-to-date preview for.
+const looksMissing = (c, accts) => [...bulkLooks(accts).groups.values()].filter(g => !previewOf(c, g.look));
 
 // ---------- publishing (server.py talks to each platform's API with your own developer app) ----------
 const PLATFORM_NAMES = { youtube: 'YouTube', tiktok: 'TikTok', instagram: 'Instagram', facebook: 'Facebook' };
@@ -4697,6 +5342,7 @@ const redirectUri = p => state.redirects[p] || `http://localhost:${location.port
 function renderAccounts() {
   syncAccountBranding();
   renderBanner(); // the banner suggests the accounts' names and offers their branding
+  if (state.clips?.[state.sel]) { syncFollow(); drawFollowPreview(true); }
   const connected = state.accounts.filter(a => a.connected).length;
   $('#accounts-count').textContent = state.accounts.length || '';
   $('#accounts-btn').title = `${connected} of ${state.accounts.length} accounts connected`;
@@ -4747,7 +5393,7 @@ function renderTiktokPrivacy() {
 // (no backdrop click and no Esc, so a running export or a half-written post isn't dismissed by accident)
 // Narration and Banner work the same way (their changes apply live, so they close with X or Done).
 for (const [btn, id, label] of [['#open-export', '#export-dlg', 'Export'], ['#open-publish', '#publish-dlg', 'Publish'],
-  ['#open-narr', '#narr-dlg', 'Narration'], ['#open-music', '#music-dlg', 'Music'], ['#open-banner', '#banner-dlg', null], ['#open-scenes', '#scenes-dlg', 'Scenes'], ['#open-hook', '#hook-dlg', 'Hook intro']]) {
+  ['#open-narr', '#narr-dlg', 'Narration'], ['#open-music', '#music-dlg', 'Music'], ['#open-banner', '#banner-dlg', null], ['#open-scenes', '#scenes-dlg', 'Scenes'], ['#open-hook', '#hook-dlg', 'Hook intro'], ['#open-follow', '#follow-dlg', 'Follow me']]) {
   const dlg = $(id);
   $(btn).addEventListener('click', () => {
     if (!state.clips[state.sel]) return;
@@ -4756,9 +5402,17 @@ for (const [btn, id, label] of [['#open-export', '#export-dlg', 'Export'], ['#op
     if (id === '#scenes-dlg') syncEditor();
     if (id === '#hook-dlg') { player.pause(); seekShort(state.clips[state.sel], 0); syncEditor(); }
     if (id === '#music-dlg') loadMusic();
-    if (id === '#publish-dlg') openThumb();
+    if (id === '#follow-dlg') openFollow();
+    if (id === '#publish-dlg') { openThumb(); if (!pubPv.busy) resetPubPreview(); }
   });
-  dlg.addEventListener('click', e => { if (e.target.closest('[data-close]')) dlg.close(); });
+  dlg.addEventListener('click', e => {
+    if (!e.target.closest('[data-close]')) return;
+    if (id === '#publish-dlg') {
+      if (pubPv.busy) { $('#publish-note').textContent = 'Still rendering the preview; it can be closed when it finishes.'; return; }
+      $('#pub-pv-video').pause();
+    }
+    dlg.close();
+  });
   dlg.addEventListener('cancel', e => e.preventDefault());
   dlg.addEventListener('keydown', e => { if (e.key === 'Escape') e.preventDefault(); });
 }
@@ -4782,15 +5436,48 @@ $('#accounts-dlg').addEventListener('keydown', e => { if (e.key === 'Escape' && 
 $('#accounts-dlg').addEventListener('cancel', e => { if (acctFormOpen()) e.preventDefault(); });
 $('#apps-btn').addEventListener('click', () => openApps());
 $('#accounts-btn').addEventListener('click', () => openAccounts());
+// Left menu collapse (remembered per browser).
+(() => {
+  const root = document.documentElement, btn = $('#side-toggle');
+  const set = on => {
+    root.classList.toggle('side-collapsed', on);
+    btn.setAttribute('aria-label', on ? 'Expand menu' : 'Collapse menu');
+    btn.title = on ? 'Expand menu' : 'Collapse menu';
+  };
+  try { set(localStorage.getItem('clipstudio:side-collapsed') === '1'); } catch {}
+  btn.addEventListener('click', () => {
+    const on = !root.classList.contains('side-collapsed');
+    set(on);
+    try { localStorage.setItem('clipstudio:side-collapsed', on ? '1' : '0'); } catch {}
+  });
+})();
 
 const link = (label, fn, extra = '') => el('button', { className: 'linkish ' + extra, type: 'button', textContent: label, onclick: fn });
 const badge = p => { const b = el('span', { className: 'pbadge', textContent: PLATFORM_INITIALS[p] }); b.dataset.p = p; return b; };
 const appsOf = p => state.apps.filter(x => x.platform === p);
 
 function groupHead(p, count, noun, addLabel, onAdd) {
-  return el('div', { className: 'acct-group-head' }, badge(p), el('b', { textContent: PLATFORM_NAMES[p] }),
+  return el('summary', { className: 'acct-group-head' },
+    el('span', { className: 'acct-chev', ariaHidden: 'true', textContent: '▸' }), badge(p), el('b', { textContent: PLATFORM_NAMES[p] }),
     el('small', { className: 'note', textContent: count ? `${count} ${noun}${count > 1 ? 's' : ''}` : '' }),
-    el('button', { className: 'btn btn-ghost btn-sm', type: 'button', textContent: addLabel, onclick: onAdd }));
+    el('button', { className: 'btn btn-ghost btn-sm', type: 'button', textContent: addLabel,
+      onclick: e => { e.preventDefault(); e.stopPropagation(); onAdd(); } }));
+}
+
+// Collapsible platform group. Open/closed state is remembered per list + platform across re-renders;
+// by default groups with items start open and empty ones start collapsed.
+const GROUP_OPEN_KEY = 'acctGroupOpen';
+const groupOpenState = (() => { try { return JSON.parse(localStorage.getItem(GROUP_OPEN_KEY)) || {}; } catch { return {}; } })();
+function collapsibleGroup(kind, p, count, head) {
+  const key = `${kind}:${p}`;
+  const group = el('details', { className: 'acct-group' }, head);
+  let last = group.open = key in groupOpenState ? groupOpenState[key] : count > 0;
+  group.addEventListener('toggle', () => {
+    if (group.open === last) return; // the initial open assignment also fires a toggle; only store user changes
+    last = groupOpenState[key] = group.open;
+    try { localStorage.setItem(GROUP_OPEN_KEY, JSON.stringify(groupOpenState)); } catch {}
+  });
+  return group;
 }
 
 function showView(list, form, showForm) {
@@ -4814,7 +5501,7 @@ function renderAppList() {
   if (!state.api) { list.append(el('div', { className: 'acct-empty', textContent: 'Start server.py to set up API credentials.' })); return; }
   for (const p of PLATFORMS) {
     const mine = appsOf(p);
-    const group = el('section', { className: 'acct-group' }, groupHead(p, mine.length, 'credential', '+ Add credentials', () => showAppForm(p)));
+    const group = collapsibleGroup('apps', p, mine.length, groupHead(p, mine.length, 'credential', '+ Add credentials', () => showAppForm(p)));
     for (const x of mine) {
       const id = el('code', { textContent: x.client_id.length > 18 ? x.client_id.slice(0, 16) + '…' : x.client_id });
       group.append(el('div', { className: 'acct-card' },
@@ -4891,7 +5578,7 @@ function renderAccountList() {
   if (!state.api) { list.append(el('div', { className: 'acct-empty', textContent: 'Start server.py to set up accounts.' })); return; }
   for (const p of PLATFORMS) {
     const mine = accountsOf(p);
-    const group = el('section', { className: 'acct-group' }, groupHead(p, mine.length, 'account', '+ Add account', () => showAccountForm(p)));
+    const group = collapsibleGroup('accounts', p, mine.length, groupHead(p, mine.length, 'account', '+ Add account', () => showAccountForm(p)));
     for (const a of mine) group.append(accountCard(a));
     if (!mine.length) group.append(el('div', { className: 'acct-empty', textContent: `No ${PLATFORM_NAMES[p]} accounts yet.` }));
     list.append(group);
@@ -4910,7 +5597,8 @@ function accountCard(a) {
       a.app_label && el('span', { className: 'sub', textContent: 'via ' + a.app_label }),
       (a.brand_banner || a.brand_logo) && el('span', { className: 'sub acct-card-brand' }, 'Branding',
         a.brand_logo && el('img', { className: 'logo', src: a.brand_logo, alt: '' }),
-        a.brand_banner && el('img', { src: a.brand_banner, alt: '' }))),
+        a.brand_banner && el('img', { src: a.brand_banner, alt: '' })),
+      a.follow_on && el('span', { className: 'sub', textContent: `Follow me scene: ${FM_AT[a.follow_at || 'end']} of each clip` })),
     el('div', { className: 'acct-card-actions' },
       a.configured && link(a.connected ? 'Reconnect' : 'Connect', () => connectAccount(a)),
       a.connected && link('Disconnect', async () => { await api(`/api/accounts/${a.id}/disconnect`, { method: 'POST' }); loadAccounts(); }),
@@ -4965,6 +5653,19 @@ function showAccountForm(p, a = null, draft = null) {
         </div>
         <input type="file" accept="image/*" data-brand-file hidden>
       </section>
+      <section class="acct-brand">
+        <div class="acct-brand-head"><b>Follow me scene</b><small class="note">A card with the logo, handle and a Follow button, shown for a few seconds in clips posted to this account</small></div>
+        <label class="follow"><input type="checkbox" data-fk="follow_on"> Add it to clips by default</label>
+        <div class="row2">
+          <label class="field">Message<input type="text" data-k="follow_text" maxlength="60" placeholder="${FM_DEFAULTS.text}" autocomplete="off"></label>
+          <label class="field">Button<input type="text" data-k="follow_btn" maxlength="20" placeholder="${FM_DEFAULTS.btn}" autocomplete="off"></label>
+        </div>
+        <div class="row2">
+          <label class="field">When<select data-k="follow_at"><option value="end">End of the clip</option><option value="middle">Middle</option><option value="start">Start</option></select></label>
+          <label class="field">Length<select data-k="follow_dur"><option value="2">2 s</option><option value="3">3 s</option><option value="4">4 s</option><option value="5">5 s</option></select></label>
+        </div>
+        <small class="note">Uses the logo and handle above. Each clip can move it or turn it off with Follow me in the editor.</small>
+      </section>
       <div class="ai-row"><button class="btn btn-primary btn-sm" type="button" data-save>${a ? 'Save' : 'Save and connect'}</button><small class="note" data-msg></small></div>
     </div>`;
   const q = sel => form.querySelector(sel), field = k => q(`[data-k=${k}]`);
@@ -5005,6 +5706,11 @@ function showAccountForm(p, a = null, draft = null) {
   if (p === 'youtube') field('yt_channel').value = draft?.yt_channel ?? a?.yt_channel ?? '';
   field('brand_handle').value = draft?.brand_handle ?? a?.brand_handle ?? '';
   field('brand_handle').placeholder = (a && accountHandle({ ...a, brand_handle: '' })) || '@yourname';
+  q('[data-fk=follow_on]').checked = !!(draft?.follow_on ?? a?.follow_on);
+  field('follow_text').value = draft?.follow_text ?? a?.follow_text ?? '';
+  field('follow_btn').value = draft?.follow_btn ?? a?.follow_btn ?? '';
+  field('follow_at').value = draft?.follow_at ?? a?.follow_at ?? FM_DEFAULTS.at;
+  field('follow_dur').value = String(draft?.follow_dur ?? a?.follow_dur ?? FM_DEFAULTS.dur);
   const sel = field('app_id');
   for (const x of apps) sel.append(el('option', { value: x.id, textContent: x.label }));
   sel.append(el('option', { value: '+new', textContent: '+ New API credentials…' }));
@@ -5019,7 +5725,9 @@ function showAccountForm(p, a = null, draft = null) {
     const keep = { label: field('label').value, login: field('login').value, ig_username: p === 'instagram' ? field('ig_username').value : undefined,
       yt_channel: p === 'youtube' ? field('yt_channel').value : undefined, fb_page: p === 'facebook' ? field('fb_page').value : undefined,
       brand_banner: brand.banner, brand_logo: brand.logo,
-      brand_handle: field('brand_handle').value };
+      brand_handle: field('brand_handle').value, follow_on: q('[data-fk=follow_on]').checked,
+      follow_text: field('follow_text').value, follow_btn: field('follow_btn').value,
+      follow_at: field('follow_at').value, follow_dur: field('follow_dur').value };
     acctFormDirty = false; // kept in the draft, restored when coming back
     openApps(p, null, saved => openAccountsWith(p, a, { ...keep, app_id: saved.id }));
   };
@@ -5033,6 +5741,7 @@ function showAccountForm(p, a = null, draft = null) {
     if (sel.value === '+new') return addApp();
     const body = { platform: p };
     form.querySelectorAll('[data-k]').forEach(i => body[i.dataset.k] = i.value);
+    body.follow_on = q('[data-fk=follow_on]').checked;
     if (brand.banner !== brandSaved.banner) body.brand_banner = brand.banner;
     if (brand.logo !== brandSaved.logo) body.brand_logo = brand.logo;
     // Open the popup during the click so the browser doesn't block it; it's pointed at the sign-in page after saving.
@@ -5095,6 +5804,7 @@ $('#publish').addEventListener('input', e => {
     if (e.target.checked && a) { setBranding(brandingOf(a)); saveBanner(); renderBanner(); }
     box.classList.toggle('on', pickedAccounts(p).length > 0);
     if (p === 'tiktok') renderTiktokPrivacy();
+    syncPubBtn();
   } else if (e.target.dataset.f) {
     postOf(state.clips[state.sel])[p][e.target.dataset.f] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     if (e.target.dataset.f === 'mode') box.dataset.mode = e.target.value;
@@ -5109,7 +5819,7 @@ async function writePost(c) {
   const j = await api('/api/post-text', {
     method: 'POST',
     body: JSON.stringify({
-      frames: await clipFrames(c), transcript: c.text, hook: c.hook, caption: c.cap,
+      frames: await clipFrames(c), transcript: c.text, hook: hookPlain(c.hook), caption: c.cap,
       source: sourceTitle(), language: aiLanguage(),
     }),
   });
@@ -5353,7 +6063,7 @@ async function makeThumb(c, say = () => {}) {
   if (!cands.length) throw new Error("couldn't read frames from the video");
   if (!state.ai) {
     const best = cands.reduce((a, b) => (b.score > a.score ? b : a));
-    Object.assign(th, { t: best.t, text: th.text || shortThumbText(c.hook || post.youtube.title) });
+    Object.assign(th, { t: best.t, text: th.text || shortThumbText(hookPlain(c.hook) || post.youtube.title) });
     return { model: null };
   }
   say(state.aiWarm ? 'The AI is choosing the frame and writing the text…'
@@ -5361,7 +6071,7 @@ async function makeThumb(c, say = () => {}) {
   const j = await api('/api/thumbnail', {
     method: 'POST',
     body: JSON.stringify({
-      frames: cands.map(f => f.url), transcript: c.text, hook: c.hook, title: post.youtube.title,
+      frames: cands.map(f => f.url), transcript: c.text, hook: hookPlain(c.hook), title: post.youtube.title,
       source: sourceTitle(), language: aiLanguage(),
     }),
   });
@@ -5392,7 +6102,7 @@ $('#thumb-playhead').addEventListener('click', async () => {
   if (!c) return;
   const th = thumbOf(c);
   th.t = clamp(player.currentTime, c.start, c.end - 0.05);
-  if (!th.text) th.text = shortThumbText(c.hook || postOf(c).youtube.title);
+  if (!th.text) th.text = shortThumbText(hookPlain(c.hook) || postOf(c).youtube.title);
   syncThumbFields();
   renderThumbStrip(c);
   await drawThumbPreview();
@@ -5410,6 +6120,142 @@ $('#thumb-download').addEventListener('click', async () => {
   const c = state.clips[state.sel], th = c && thumbOf(c);
   if (!th || th.t == null) return;
   el('a', { href: await thumbJPEG(c, th), download: `thumbnail-clip-${state.sel + 1}.jpg` }).click();
+});
+
+// ---------- Generate & preview (Publish dialog): fills in what's missing, then renders the exact clip that will be uploaded ----------
+// Publish stays off until every account's version of the clip has been previewed, and it uploads exactly those files.
+const pubPv = { busy: false, publishing: false, run: 0 };
+
+// Publish is on only when the clip has an up-to-date preview for the branding of every ticked account.
+function syncPubBtn() {
+  const c = state.clips[state.sel], picks = pickedAccounts(), btn = $('#publish-btn');
+  const missing = c && picks.length ? looksMissing(c, picks) : [];
+  btn.disabled = pubPv.busy || pubPv.publishing || !c || !picks.length || missing.length > 0;
+  btn.title = !picks.length ? 'Tick at least one account.'
+    : missing.length ? 'Generate the preview first (step 1): the previewed clip is the file that gets uploaded.' : '';
+  return !btn.disabled;
+}
+
+function resetPubPreview() {
+  pubPv.run++;
+  const video = $('#pub-pv-video');
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+  $('#pub-pv').hidden = true;
+  $('#pub-pv-thumb').hidden = true;
+  $('#pub-pv-note').textContent = '';
+  // A preview made earlier that still matches the clip is shown again, ready to publish.
+  const c = state.clips[state.sel], picks = pickedAccounts();
+  const looks = [...bulkLooks(picks).groups.values()], r = c && looks.length && !looksMissing(c, picks).length && previewOf(c, looks[0].look);
+  if (r) showPubPreview(c, r, looks, false);
+  syncPubBtn();
+}
+
+function showPubPreview(c, r, looks, play = true) {
+  const video = $('#pub-pv-video'), [W, H] = exportDims(state.aspect, +$('#export-res').value), th = thumbOf(c), img = $('#pub-pv-thumb');
+  $('#pub-pv-stage').style.setProperty('--pva', `${W} / ${H}`);
+  $('#pub-pv').hidden = false;
+  r.url ||= URL.createObjectURL(r.blob);
+  video.src = r.url;
+  $('#pub-pv-busy').hidden = true;
+  if (play) video.play().catch(() => {});
+  if (th.on && th.t != null) thumbJPEG(c, th).then(u => { if (u) { img.src = u; img.hidden = false; } }).catch(() => {});
+  const first = looks[0]?.accounts.map(a => a.label).join(', ');
+  $('#pub-pv-look').textContent = looks.length > 1 ? `Banner shown: ${first}` : '';
+  $('#pub-pv-note').textContent = `${(r.blob.size / 1048576).toFixed(1)} MB · ${Math.round(c.end - c.start)} s. This is the file that gets uploaded`
+    + (looks.length > 1 ? ` to ${first}; the versions with the other accounts' branding are rendered and ready too.` : '.')
+    + ' Change anything in the clip and you need to generate the preview again before publishing.'
+    + (r.upscale > 1.5 ? ` The source only has ${r.source} of picture for this crop, so it's enlarged ${r.upscale.toFixed(1)}×.` : '');
+}
+
+$('#pub-preview').addEventListener('click', async () => {
+  const c = state.clips[state.sel], note = $('#publish-note'), btn = $('#pub-preview'), pubBtn = $('#publish-btn');
+  if (!c || pubPv.busy || state.exporting) return;
+  const my = ++pubPv.run, post = postOf(c);
+  pubPv.busy = true;
+  btn.disabled = pubBtn.disabled = true;
+  note.textContent = '';
+  try {
+    // 1. Post text, when none has been written yet.
+    const noText = !post.youtube.title.trim() && !post.tiktok.caption.trim() && !post.instagram.caption.trim() && !post.facebook.caption.trim();
+    if (noText && state.ai) {
+      $('#post-note').textContent = state.aiWarm ? 'Writing…' : 'Writing… the first run loads the AI model and can take up to a minute.';
+      try {
+        const model = await writePost(c);
+        if (!pickedAccounts().length) {
+          for (const a of state.accounts) if (a.connected) state.picks[a.id] = true;
+          savePicks();
+          renderAccountPicks();
+        }
+        renderPost();
+        $('#post-note').textContent = `Written by ${model}. Read it over before posting; edit anything.`;
+      } catch (e) { $('#post-note').textContent = 'AI failed: ' + e.message; }
+    }
+    // 2. Thumbnail, when no frame has been picked yet.
+    const th = thumbOf(c);
+    if (th.on && th.t == null) {
+      try {
+        const { model } = await makeThumb(c, s => { $('#thumb-note').textContent = s; });
+        $('#thumb-note').textContent = model ? `Chosen by ${model}. Edit the words or pick another frame below.` : 'Picked the sharpest frame.';
+        syncThumbFields();
+        renderThumbStrip(c);
+        await drawThumbPreview();
+      } catch (e) { $('#thumb-note').textContent = 'Thumbnail failed: ' + e.message; }
+    }
+    if (my !== pubPv.run) return;
+
+    // 3. The final render: one per branding look of the ticked accounts (these are the files Publish uploads).
+    const box = $('#pub-pv'), video = $('#pub-pv-video');
+    const [W, H] = exportDims(state.aspect, +$('#export-res').value);
+    $('#pub-pv-stage').style.setProperty('--pva', `${W} / ${H}`);
+    box.hidden = false;
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    $('#pub-pv-busy').hidden = false;
+    $('#pub-pv-busy-text').textContent = 'Rendering the final clip…';
+    $('#pub-pv-bar').style.width = '0%';
+    $('#pub-pv-note').textContent = '';
+    const img = $('#pub-pv-thumb');
+    img.hidden = true;
+    if (th.on && th.t != null) thumbJPEG(c, th).then(u => { if (u && my === pubPv.run) { img.src = u; img.hidden = false; } }).catch(() => {});
+    box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    const { mine, groups } = bulkLooks(pickedAccounts()), looks = [...groups.values()];
+    $('#pub-pv-look').textContent = looks.length > 1 ? `Banner shown: ${looks[0].accounts.map(a => a.label).join(', ')}` : '';
+    let label = 'Rendering the final clip…';
+    const timer = setInterval(() => {
+      $('#pub-pv-bar').style.width = $('#export-bar').style.width;
+      const s = $('#export-note').textContent;
+      if (/voice|music/i.test(s)) $('#pub-pv-busy-text').textContent = s;
+      else if (state.exporting) $('#pub-pv-busy-text').textContent = label;
+    }, 300);
+    try {
+      let first;
+      for (const [i, g] of (looks.length ? looks : [{ look: mine, accounts: [] }]).entries()) {
+        if (looks.length > 1) label = `Rendering the final clip (${i + 1} of ${looks.length}: ${g.accounts.map(a => a.label).join(', ')})…`;
+        $('#pub-pv-busy-text').textContent = label;
+        await setBranding(g.look);
+        drawBannerPreview();
+        let r;
+        try { r = await renderClip(); } finally { endExport(); }
+        if (my !== pubPv.run) return;
+        first ||= r;
+      }
+      showPubPreview(c, first, looks);
+    } catch (e) {
+      if (my === pubPv.run) { $('#pub-pv-busy-text').textContent = 'Render failed: ' + e.message; $('#pub-pv-bar').style.width = '0%'; }
+    } finally {
+      clearInterval(timer);
+      await setBranding(mine);
+      drawBannerPreview();
+    }
+  } finally {
+    pubPv.busy = false;
+    btn.disabled = false;
+    syncPubBtn();
+  }
 });
 
 function publishFields(p, post) {
@@ -5431,8 +6277,13 @@ $('#publish-btn').addEventListener('click', async () => {
     || (has('youtube') && c.end - c.start > 180 && 'YouTube Shorts can be at most 3 minutes.')
     || (has('facebook') && c.end - c.start > 90 && 'Facebook Reels can be at most 90 seconds.');
   if (problem) { note.textContent = problem; return; }
+  if (pubPv.busy) { note.textContent = 'Wait for the preview to finish rendering.'; return; }
+  if (!syncPubBtn()) { note.textContent = 'Generate the preview first (step 1): the previewed clip is the file that gets uploaded.'; return; }
 
+  pubPv.publishing = true;
   btn.disabled = true;
+  $('#pub-preview').disabled = true;
+  $('#pub-pv-video').pause();
   list.innerHTML = '';
   const name = a => `${PLATFORM_NAMES[a.platform]} · ${a.label}`;
   const lines = Object.fromEntries(picks.map(a => [a.id, list.appendChild(el('div', { className: 'pub-line', textContent: `${name(a)}: waiting for the render…` }))]));
@@ -5447,25 +6298,16 @@ $('#publish-btn').addEventListener('click', async () => {
   const coverFields = p => !th ? {} : p === 'youtube' ? (thumbUrl ? { thumb: thumbUrl } : {})
     : { cover_ms: Math.round(clamp(th.t - c.start, 0, c.end - c.start) * 1000) };
   // Each account is posted with its own branding (banner image, logo, handle): accounts that share a look
-  // share one render. Every account gets its own handle; one without branding images keeps the editor's images.
-  const mine = { acct: banner.acct, img: banner.img, logo: banner.logo, text: banner.text };
-  const groups = new Map();
-  for (const a of picks) {
-    const look = banner.on ? { ...mine, ...brandingOf(a) } : mine;
-    const key = JSON.stringify([look.img, look.logo, look.text]);
-    if (!groups.has(key)) groups.set(key, { look, accounts: [] });
-    groups.get(key).accounts.push(a);
-  }
+  // share one render. The files uploaded are the ones "Generate & preview" rendered; nothing is rendered here.
+  const { groups } = bulkLooks(picks);
   const uploads = [];
   try {
     let n = 0;
     for (const { look, accounts } of groups.values()) {
       const of = groups.size > 1 ? ` (${++n} of ${groups.size}: ${accounts.map(a => a.label).join(', ')})` : '';
-      note.textContent = `Rendering the clip${of}…`;
-      await setBranding(look);
-      drawBannerPreview();
-      let blob;
-      try { ({ blob } = await renderClip()); } finally { endExport(); }
+      const pv = previewOf(c, look);
+      if (!pv) throw new Error('the preview is out of date. Generate it again (step 1).');
+      const { blob } = pv;
       note.textContent = `Converting to MP4${of}…`;
       const { media_id } = await api('/api/media', { method: 'POST', body: blob, headers: { 'Content-Type': 'application/octet-stream' } });
       for (const a of accounts) lines[a.id].textContent = `${name(a)}: uploading…`;
@@ -5475,14 +6317,12 @@ $('#publish-btn').addEventListener('click', async () => {
     await Promise.all(uploads);
     note.textContent = '';
   } catch (e) {
-    endExport();
     note.textContent = 'Publishing failed: ' + e.message;
     await Promise.all(uploads);
-  } finally {
-    await setBranding(mine);
-    drawBannerPreview();
   }
-  btn.disabled = false;
+  pubPv.publishing = false;
+  syncPubBtn();
+  $('#pub-preview').disabled = false;
 
   async function post1(a, media_id) {
       const line = lines[a.id];
@@ -5514,9 +6354,9 @@ $('#publish-btn').addEventListener('click', async () => {
   }
 });
 // ---------- Publish all: a thumbnail and post text for every clip, read over, then published to the ticked accounts ----------
-// Step 1 fills in what's missing (or everything, with "Rewrite"); step 2 unlocks once every ticked clip has a
-// thumbnail and the text each ticked platform needs. Clips render one after another (real time), once per branding
-// look; each clip's uploads run while the next one renders.
+// Step 1 fills in what's missing (or everything, with "Rewrite") and renders the final clip of each one, once per
+// branding look (real time). Step 2 unlocks once every ticked clip has a thumbnail, the text each ticked platform
+// needs and an up-to-date preview, and uploads exactly those previewed files.
 const bulk = { picks: new Set(), accts: new Set(), running: false, stop: false, rows: new Map(), status: new Map() };
 const bulkOpts = (() => { try { return JSON.parse(localStorage.getItem('clipstudio:bulkOpts')) || {}; } catch { return {}; } })();
 const saveBulkOpts = () => { try { localStorage.setItem('clipstudio:bulkOpts', JSON.stringify(bulkOpts)); } catch {} };
@@ -5527,14 +6367,29 @@ const clipLen = c => c.end - c.start;
 const textReady = (c, p) => !!(p === 'youtube' ? postOf(c).youtube.title : postOf(c)[p].caption).trim();
 const textsReady = c => bulkPlatforms().every(p => textReady(c, p));
 const thumbReady = c => { const th = postOf(c).thumb; return !!th && th.t != null && th.t >= c.start && th.t <= c.end; };
+const previewsReady = c => bulkAccounts().length > 0 && !looksMissing(c, bulkAccounts()).length;
 const sentTo = (c, a) => !!(a && postOf(c).sent?.[a.id]);
 const acctName = a => `${PLATFORM_NAMES[a.platform]} · ${a.label}`;
 
 // ---- voice-over for every clip: one style and voice for all; each clip gets its own AI script ----
-const bulkVoice = () => (bulkOpts.voice ||= { on: false, style: narrPrefs.style || 'hype', timing: narrPrefs.timing || 'scenes',
-  voice: narrPrefs.voice || '', rate: narrPrefs.rate ?? 10, orig: narrPrefs.orig ?? 0.2 });
+const bulkVoice = () => {
+  const v = (bulkOpts.voice ||= { on: false, style: narrPrefs.style || 'hype', timing: narrPrefs.timing || 'scenes',
+    voice: narrPrefs.voice || '', rate: narrPrefs.rate ?? 10, orig: narrPrefs.orig ?? 0.2 });
+  v.src ||= 'ai';
+  return v;
+};
 const voiceOn = () => bulkVoice().on;
-const narrTextReady = c => !voiceOn() || !!narrOf(c).text.trim();
+// Publish all only reads scripts the AI wrote or the clip's own audio captions, never typed text.
+const narrFromSource = c => {
+  const n = narrOf(c);
+  return !!n.text.trim() && n.text === (bulkVoice().src === 'captions' ? n.capText : n.aiText);
+};
+const narrTextReady = c => !voiceOn() || narrFromSource(c);
+// The clip's transcribed speech as a timed script (no fallback to typed hook/caption text).
+function audioCaptionScript(c) {
+  const s = captionScript(c);
+  return s?.from === 'transcript' ? s : null;
+}
 // The modal's voice settings, applied to the clip's narration (its script stays its own).
 function applyVoice(c) {
   const v = bulkVoice(), n = narrOf(c);
@@ -5546,14 +6401,18 @@ function renderBulkVoice() {
   const v = bulkVoice();
   $('#bv-on').checked = v.on;
   $('#bv-opts').hidden = !v.on;
+  $('#bv-src').value = v.src;
   $('#bv-style').value = v.style;
   $('#bv-timing').value = v.timing;
+  $('#bv-style').disabled = $('#bv-timing').disabled = v.src === 'captions' || bulk.running;
   $('#bv-rate').value = v.rate;
   $('#bv-orig').value = Math.round(v.orig * 100);
   $('#bv-rate-v').textContent = (v.rate > 0 ? '+' : '') + v.rate + '%';
   $('#bv-orig-v').textContent = Math.round(v.orig * 100) + '%';
   $('#bv-note').textContent = !v.on ? '' : !state.api ? 'Voice-over needs server.py running.'
-    : !state.ai ? 'Writing scripts needs the local AI model; you can still type each script yourself.' : '';
+    : v.src === 'captions' ? (state.words.length ? 'Each clip is voiced with the words transcribed from its audio, at the moment they are said. Clips with no speech fail.'
+      : 'This video has no transcript: analyze it with server.py running to get captions from its audio.')
+    : !state.ai ? 'Writing scripts needs the local AI model. Start it, or switch "Script from" to the captions.' : '';
   if (!v.on) return;
   if (!state.voices) { loadVoices().then(() => state.voices && renderBulkVoice()); return; }
   if (!voiceById(v.voice)) v.voice = defaultVoice();
@@ -5576,6 +6435,7 @@ function fillBulkVoices(lang, selected) {
 
 const bulkVoiceChanged = () => { saveBulkOpts(); renderBulkVoice(); renderBulkList(); };
 $('#bv-on').addEventListener('change', e => { bulkVoice().on = e.target.checked; bulkVoiceChanged(); });
+$('#bv-src').addEventListener('change', e => { bulkVoice().src = e.target.value; bulkVoiceChanged(); });
 $('#bv-style').addEventListener('change', e => { bulkVoice().style = e.target.value; saveBulkOpts(); });
 $('#bv-timing').addEventListener('change', e => { bulkVoice().timing = e.target.value; saveBulkOpts(); });
 $('#bv-lang').addEventListener('change', e => { bulkVoice().voice = fillBulkVoices(e.target.value); saveBulkOpts(); });
@@ -5596,6 +6456,207 @@ $('#bv-try').addEventListener('click', async () => {
   } catch (e) { $('#bv-note').textContent = 'Voice failed: ' + e.message; }
   finally { btn.disabled = bulk.running; }
 });
+
+// ---- text hook for every ticked clip: one source, highlight and position for all; each clip keeps its own words ----
+const bulkHook = () => (bulkOpts.hook ||= { on: false, src: 'ai', hi: 'keep', y: 7 });
+const hookOn = () => bulkHook().on;
+const hookAi = () => hookOn() && (bulkHook().src === 'ai' || bulkHook().src === 'ai-all');
+// With AI hooks, a ticked clip is ready once it has one; "keep" and "none" need nothing more.
+const hookTextReady = c => !hookAi() || !!hookPlain(c.hook);
+const HOOK_STOP = new Set('the a an and or but of to in on at for with this that is are was were be it its you your i my we our they he she his her not no so just how why what when who'.split(' '));
+// Marks the hook's key word (the longest that isn't a filler word) for the yellow highlight.
+function autoHighlight(text) {
+  const plain = hookPlain(text), words = plain.split(' ');
+  if (!plain || words.length < 2) return plain;
+  let k = -1;
+  words.forEach((w, i) => {
+    const core = w.replace(/[^\p{L}\p{N}]/gu, '');
+    if (core && !HOOK_STOP.has(core.toLowerCase()) && (k < 0 || core.length > words[k].replace(/[^\p{L}\p{N}]/gu, '').length)) k = i;
+  });
+  if (k < 0) return plain;
+  words[k] = `*${words[k]}*`;
+  return words.join(' ');
+}
+// The modal's hook settings, applied to clip c (its words stay its own unless the source says otherwise).
+function applyHook(c) {
+  const h = bulkHook();
+  if (!h.on) return;
+  if (h.src === 'none') { c.hook = ''; return; }
+  c.hookY = h.y;
+  if (h.hi === 'off') c.hook = hookPlain(c.hook);
+}
+// Writes the hook with the AI for clip c, as the source asks (missing ones, or all with "rewrite" / Rewrite ticked).
+async function bulkWriteHook(c, redo, say) {
+  const h = bulkHook();
+  if (!hookAi() || (!redo && h.src !== 'ai-all' && hookPlain(c.hook))) return;
+  if (!state.ai) throw new Error('writing the hook needs the local AI model. Type it, or set Hook text to "Keep each clip\'s own"');
+  say('Writing the hook…');
+  const j = await aiCaption(c);
+  c.hook = h.hi === 'auto' ? autoHighlight(j.hook) : hookPlain(j.hook);
+}
+function syncSelectedHook(c) {
+  if (state.clips[state.sel] !== c) return;
+  $('#hook').value = c.hook;
+  renderHookPreview(c.hook);
+  $('#ov-hook').style.top = hookPos(c) + '%';
+  $('#hook-y').value = hookPos(c);
+}
+
+function renderBulkHook() {
+  const h = bulkHook();
+  $('#bh-on').checked = h.on;
+  $('#bh-opts').hidden = !h.on;
+  $('#bh-src').value = h.src;
+  $('#bh-hi').value = h.hi;
+  $('#bh-hi').disabled = $('#bh-y').disabled = bulk.running || h.src === 'none';
+  $('#bh-y').value = h.y;
+  $('#bh-y-v').textContent = h.y < 30 ? 'top' : h.y < 55 ? 'middle' : 'bottom';
+  const chosen = bulkChosen(), without = chosen.filter(c => !hookPlain(c.hook)).length;
+  $('#bh-note').textContent = !h.on ? ''
+    : h.src === 'none' ? 'Step 1 removes the on-screen hook from every ticked clip.'
+    : !hookAi() ? (without ? `${without} of ${chosen.length} ticked clips have no hook and will show none. Type one in each clip below.` : '')
+    : !state.ai ? 'Writing hooks needs the local AI model. Start it, or switch Hook text to "Keep each clip\'s own" and type them below.'
+    : h.hi === 'auto' ? 'The AI hooks get their key word highlighted. Edit any hook below; put *asterisks* around a word to highlight it.'
+    : 'Edit any hook below; put *asterisks* around a word to highlight it.';
+}
+const bulkHookChanged = () => { saveBulkOpts(); renderBulkHook(); renderBulkList(); };
+$('#bh-on').addEventListener('change', e => { bulkHook().on = e.target.checked; if (e.target.checked) bulkChosen().forEach(applyPos); bulkHookChanged(); });
+$('#bh-src').addEventListener('change', e => { bulkHook().src = e.target.value; bulkHookChanged(); });
+$('#bh-hi').addEventListener('change', e => { bulkHook().hi = e.target.value; bulkHookChanged(); });
+// The position moves every ticked clip's hook right away, so previews and the editor show it.
+function applyPos(c) { if (bulkHook().src !== 'none') { c.hookY = bulkHook().y; syncSelectedHook(c); } }
+$('#bh-y').addEventListener('input', e => { bulkHook().y = +e.target.value; bulkChosen().forEach(applyPos); saveBulkOpts(); renderBulkHook(); });
+$('#bh-y').addEventListener('change', () => renderBulkList());
+
+// ---- Follow me scene for every ticked clip: sets each clip's own setting (c.fm), so the Follow me dialog shows it too ----
+const bulkChosen = () => state.clips.filter(c => bulk.picks.has(c));
+function renderBulkFollow() {
+  const chosen = bulkChosen(), on = chosen.filter(c => !c.fm?.off), cb = $('#bf-on');
+  cb.checked = chosen.length > 0 && on.length === chosen.length;
+  cb.indeterminate = on.length > 0 && on.length < chosen.length;
+  cb.disabled = bulk.running || !chosen.length;
+  $('#bf-opts').hidden = !on.length;
+  const ats = [...new Set(on.map(c => typeof c.fm?.at === 'number' ? 'custom:' + c.fm.at : c.fm?.at || ''))];
+  const sel = $('#bf-at'), one = ats.length === 1 ? ats[0] : null;
+  if (document.activeElement !== sel) sel.value = one == null ? '' : one.startsWith('custom:') ? 'custom' : one;
+  sel.options[0].textContent = one == null && on.length ? 'Mixed: each clip keeps its own' : 'Account default';
+  $('#bf-t-field').hidden = sel.value !== 'custom';
+  if (one?.startsWith('custom:') && document.activeElement !== $('#bf-t')) $('#bf-t').value = fmtTenths(+one.slice(7));
+  // Which ticked accounts have a card: the others get none.
+  const accts = bulkAccounts(), withCard = accts.filter(a => a.follow_on), note = $('#bf-note');
+  note.replaceChildren();
+  if (!on.length) return;
+  if (!accts.length) note.append('Tick the accounts to publish to; each one shows its own card.');
+  else if (!withCard.length) note.append("None of the ticked accounts has a Follow me scene set up, so no card is added. ",
+    el('button', { type: 'button', className: 'linkish', textContent: 'Set it up in Accounts', onclick: () => openAccounts(accts[0].platform, accts[0]) }));
+  else {
+    const without = accts.filter(a => !a.follow_on);
+    note.append(`Card from ${withCard.map(a => accountHandle(a)).join(', ')}.`
+      + (without.length ? ` ${without.map(a => a.label).join(', ')} ha${without.length > 1 ? 've' : 's'} no Follow me scene, so ${without.length > 1 ? 'they get' : 'it gets'} none. ` : ' '));
+    if (without.length) note.append(el('button', { type: 'button', className: 'linkish', textContent: 'Set it up', onclick: () => openAccounts(without[0].platform, without[0]) }));
+  }
+}
+// The card's window in clip c for the first ticked account that has one, as shown in each row.
+function bulkFollowText(c) {
+  if (c.fm?.off) return 'Follow me: off';
+  const a = bulkAccounts().find(x => x.follow_on), f = a && followOf(a), w = f && followWindow(c, f);
+  return !a ? '' : w ? `Follow me: ${fmt(w.t0)} – ${fmt(w.t0 + w.dur)}` : 'Follow me: clip too short';
+}
+function bulkFollowChanged() { renderBulkList(); drawFollowPreview(true); syncFollow(); }
+$('#bf-on').addEventListener('change', e => {
+  for (const c of bulkChosen()) {
+    c.fm = { ...c.fm };
+    if (e.target.checked) delete c.fm.off; else c.fm.off = true;
+  }
+  bulkFollowChanged();
+});
+$('#bf-at').addEventListener('change', e => {
+  const v = e.target.value;
+  let t = parseClipTime($('#bf-t').value);
+  if (v === 'custom' && isNaN(t)) { t = 5; $('#bf-t').value = '0:05'; }
+  for (const c of bulkChosen()) {
+    if (c.fm?.off) continue;
+    c.fm = { ...c.fm };
+    if (v === 'custom') c.fm.at = Math.round(clamp(t, 0, clipLen(c)) * 10) / 10;
+    else if (v) c.fm.at = v; else delete c.fm.at;
+  }
+  bulkFollowChanged();
+});
+$('#bf-t').addEventListener('change', e => {
+  const t = parseClipTime(e.target.value);
+  if (isNaN(t)) { $('#bf-note').textContent = 'Write the time as m:ss (e.g. 0:05) or in seconds (e.g. 5.5).'; return; }
+  $('#bf-at').value = 'custom';
+  $('#bf-at').dispatchEvent(new Event('change'));
+});
+$('#bf-t').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.dispatchEvent(new Event('change')); });
+
+// ---- Follow the action for every ticked clip: sets follow on each scene (shot) that crops the sides, as the editor's checkbox does ----
+const bulkTrackShots = () => bulkChosen().flatMap(shotsOf).filter(cropsSides);
+function renderBulkTrack() {
+  const shots = bulkTrackShots(), on = shots.filter(s => s.follow), cb = $('#bt-on');
+  cb.checked = shots.length > 0 && on.length === shots.length;
+  cb.indeterminate = on.length > 0 && on.length < shots.length;
+  cb.disabled = bulk.running || !state.track || !shots.length;
+  $('#bt-note').textContent = !state.track ? 'Following the action needs server.py.'
+    : !bulkChosen().length ? ''
+    : !shots.length ? 'Nothing to follow: this format shows the full width. Zoom in on a clip to crop it.'
+    : cb.indeterminate ? `On in ${on.length} of ${shots.length} scenes. Tick to turn it on everywhere.` : '';
+}
+$('#bt-on').addEventListener('change', e => {
+  for (const s of bulkTrackShots()) s.follow = e.target.checked;
+  renderBulkList();
+  syncEditor();
+});
+
+// ---- schedule: clip i of the ticked ones goes live at start + i × interval, on every ticked account ----
+const bulkSched = () => (bulkOpts.sched ||= { on: false, start: '', every: '24' });
+const pad2 = n => String(n).padStart(2, '0');
+const localInput = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+const fmtWhen = t => new Date(t).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+// The time each ticked clip goes live (ms), in order, or null to publish now.
+function schedTimes() {
+  const s = bulkSched();
+  if (!s.on) return null;
+  const start = new Date(s.start).getTime();
+  if (!Number.isFinite(start)) return [];
+  return bulkChosen().map((_, i) => start + i * Number(s.every) * 3600e3);
+}
+// Facebook wants at least 10 minutes' notice, and the uploads take a while, so the first slot has to be a bit ahead.
+const schedLead = () => (bulkPlatforms().includes('facebook') ? 15 : 5) * 60e3;
+function schedProblem() {
+  const t = schedTimes();
+  if (!t) return '';
+  if (!Number.isFinite(new Date(bulkSched().start).getTime())) return 'Pick when the first clip goes live.';
+  if (!t.length) return '';
+  if (t[0] < Date.now() + schedLead()) return `The first clip has to be at least ${schedLead() / 60e3} minutes from now.`;
+  if (bulkPlatforms().includes('facebook') && t[t.length - 1] > Date.now() + 29 * 86400e3) return 'Facebook can schedule Reels up to 29 days ahead; the last clip is later than that.';
+  return '';
+}
+function renderBulkSched() {
+  const s = bulkSched();
+  if (!s.start) {
+    const d = new Date(Date.now() + 3600e3);
+    d.setMinutes(0, 0, 0);
+    s.start = localInput(d);
+  }
+  $('#bs-on').checked = s.on;
+  $('#bs-opts').hidden = !s.on;
+  $('#bs-start').value = s.start;
+  $('#bs-start').min = localInput(new Date());
+  $('#bs-every').value = s.every;
+  const note = $('#bs-note'), t = schedTimes(), ps = bulkPlatforms();
+  if (!t) { note.textContent = ''; return; }
+  const bits = [schedProblem() || (t.length ? (t.length === 1 ? `Goes live ${fmtWhen(t[0])}.`
+    : `${t.length} clips, from ${fmtWhen(t[0])} to ${fmtWhen(t[t.length - 1])}.`) : '')];
+  if (ps.includes('youtube')) bits.push('YouTube: uploaded now and kept private, then YouTube makes it public at its time.');
+  if (ps.includes('facebook')) bits.push('Facebook: uploaded now and scheduled on the Page.');
+  if (ps.includes('instagram') || ps.includes('tiktok'))
+    bits.push(`${['instagram', 'tiktok'].filter(p => ps.includes(p)).map(p => PLATFORM_NAMES[p]).join(' and ')} can't schedule through their API, so ViralClip keeps the clips and posts them at their time: server.py has to be running then.`);
+  note.textContent = bits.filter(Boolean).join(' ');
+}
+$('#bs-on').addEventListener('change', e => { bulkSched().on = e.target.checked; saveBulkOpts(); renderBulkSched(); syncBulkButtons(); });
+$('#bs-start').addEventListener('change', e => { bulkSched().start = e.target.value; saveBulkOpts(); renderBulkSched(); });
+$('#bs-every').addEventListener('change', e => { bulkSched().every = e.target.value; saveBulkOpts(); renderBulkSched(); });
 
 function bulkSettings(p) {
   const o = {};
@@ -5707,14 +6768,14 @@ function bulkRow(c, i) {
       if (list.length) {
         const k = list.findIndex(f => th.t != null && Math.abs(f.t - th.t) < 0.01);
         th.t = list[(k + 1) % list.length].t;
-        th.text ||= shortThumbText(c.hook || post.youtube.title);
+        th.text ||= shortThumbText(hookPlain(c.hook) || post.youtube.title);
         th.on = true;
         await drawBulkThumb(c, cv);
       }
     } finally { other.disabled = bulk.running; syncBulkButtons(); }
   };
-  const field = (label, obj, key, { area = false, max, rows = 2, after } = {}) => el('label', { className: 'field' }, label,
-    el(area ? 'textarea' : 'input', { ...(area ? { rows } : { type: 'text' }), value: obj[key] ?? '', maxLength: max, disabled: lock,
+  const field = (label, obj, key, { area = false, max, rows = 2, after, readOnly = false } = {}) => el('label', { className: 'field' }, label,
+    el(area ? 'textarea' : 'input', { ...(area ? { rows } : { type: 'text' }), value: obj[key] ?? '', maxLength: max, disabled: lock, readOnly,
       oninput: e => { obj[key] = e.target.value; after?.(); syncBulkButtons(); } }));
   const fields = [];
   if (ps.includes('youtube') || !ps.length)
@@ -5722,14 +6783,18 @@ function bulkRow(c, i) {
       field('YouTube description', post.youtube, 'description', { area: true, max: 4900, rows: 3 }));
   for (const p of ['tiktok', 'instagram', 'facebook'])
     if (ps.includes(p)) fields.push(field(`${PLATFORM_NAMES[p]} caption`, post[p], 'caption', { area: true, max: 2200, rows: 3 }));
+  if (hookOn() && bulkHook().src !== 'none')
+    fields.push(field('On-screen hook · *word* to highlight', c, 'hook', { max: 80, after: () => syncSelectedHook(c) }));
   fields.push(field('Thumbnail text', th, 'text', { max: 40, after: () => { th.accent = ''; drawBulkThumb(c, cv); } }));
   if (voiceOn()) {
-    const n = narrOf(c);
-    fields.push(field('Voice-over script', n, 'text', { area: true, max: 3000, rows: 4 }));
-    const play = el('button', { type: 'button', className: 'btn btn-ghost btn-sm', textContent: n.audio && !narrStale(c) ? '▶ Play voice' : '▶ Make & play voice', disabled: lock });
-    const vnote = el('small', { className: 'note' });
+    const n = narrOf(c), caps = bulkVoice().src === 'captions', ok = narrFromSource(c);
+    const script = { text: ok ? n.text : '' };
+    fields.push(field(caps ? 'Voice-over script · from the clip\'s audio captions' : 'Voice-over script · written by AI', script, 'text',
+      { area: true, max: 3000, rows: 4, readOnly: true }));
+    const play = el('button', { type: 'button', className: 'btn btn-ghost btn-sm', textContent: n.audio && !narrStale(c) ? '▶ Play voice' : '▶ Make & play voice', disabled: lock || !ok });
+    const vnote = el('small', { className: 'note', textContent: ok ? '' : `Run step 1 to ${caps ? 'fill it from the captions' : 'have the AI write it'}.` });
     play.onclick = async () => {
-      if (!n.text.trim()) { vnote.textContent = 'Write or generate the script first.'; return; }
+      if (!narrFromSource(c)) { vnote.textContent = 'Run step 1 to make the script first.'; return; }
       play.disabled = true;
       try {
         applyVoice(c);
@@ -5753,7 +6818,8 @@ function bulkRow(c, i) {
     el('div', { className: 'bulk-fields' },
       el('div', { className: 'bulk-head' }, el('b', { textContent: `Clip ${i + 1}` }),
         el('span', { className: 'note', textContent: `${fmt(c.start)} – ${fmt(c.end)} · ${Math.round(clipLen(c))}s`
-          + (sent.length ? ` · already published to ${sent.map(a => a.label).join(', ')}` : '') })),
+          + (sent.length ? ` · already published to ${sent.map(a => a.label).join(', ')}` : '')
+          + (bulkFollowText(c) ? ' · ' + bulkFollowText(c) : '') })),
       ...fields, status));
   bulk.rows.set(c, row);
   drawBulkThumb(c, cv);
@@ -5773,7 +6839,9 @@ function refreshBulkRow(c) {
 
 function syncBulkButtons() {
   const accts = bulkAccounts(), chosen = state.clips.filter(c => bulk.picks.has(c));
-  const ready = chosen.filter(c => textsReady(c) && thumbReady(c) && narrTextReady(c)).length;
+  // Previews aren't required here: step 2 renders any that are missing (e.g. after a reload, renders aren't kept).
+  const ready = chosen.filter(c => textsReady(c) && thumbReady(c) && narrTextReady(c) && hookTextReady(c)).length;
+  const unrendered = accts.length ? chosen.filter(c => !previewsReady(c)).length : 0;
   $('#bulk-count').textContent = `${chosen.length} of ${state.clips.length} clips`;
   $('#bulk-all').checked = chosen.length === state.clips.length;
   $('#bulk-all').indeterminate = chosen.length > 0 && chosen.length < state.clips.length;
@@ -5785,12 +6853,18 @@ function syncBulkButtons() {
   pub.textContent = !accts.length || !chosen.length ? '2. Publish all'
     : `2. Publish ${chosen.length} to ${accts.length === 1 ? accts[0].label : accts.length + ' accounts'}`;
   $('#bulk-stop').style.display = bulk.running ? '' : 'none';
+  if (bulkSched().on && accts.length && chosen.length) pub.textContent = pub.textContent.replace('2. Publish', '2. Schedule');
+  renderBulkHook();
+  renderBulkFollow();
+  renderBulkTrack();
+  renderBulkSched();
   if (bulk.running) return;
   const yt = accts.filter(a => a.platform === 'youtube').length;
   $('#bulk-note').textContent = !accts.length ? 'Tick at least one account to publish to.'
     : !chosen.length ? 'Tick at least one clip.'
-    : ready < chosen.length ? `${ready} of ${chosen.length} clips have a thumbnail and all their text${voiceOn() ? ' and voice-over script' : ''}. Generate the rest with step 1, or fill them in.`
+    : ready < chosen.length ? `${ready} of ${chosen.length} clips have a thumbnail and all their text${hookAi() ? ', a hook' : ''}${voiceOn() ? ' and a voice-over script' : ''}. Generate the rest with step 1.`
     : `All ${chosen.length} clips are ready for ${accts.length} account${accts.length > 1 ? 's' : ''}. Read them over, then publish.`
+      + (unrendered ? ` ${unrendered} clip${unrendered > 1 ? 's' : ''} will be rendered while publishing; keep this tab visible.` : '')
       + (yt && chosen.length > 6 ? ' Note: the default YouTube API quota covers about 6 uploads a day.' : '');
 }
 
@@ -5798,9 +6872,10 @@ function setBulkRunning(on) {
   bulk.running = on;
   bulk.stop = false;
   $('#bulk-stop').textContent = 'Stop after this clip';
-  $('#bv-on').disabled = on;
+  $('#bv-on').disabled = $('#bs-on').disabled = $('#bh-on').disabled = on;
   bulkDlg.querySelectorAll('.bulk-setup select, .bulk-setup input, .bulk-setup button, .bulk-list input, .bulk-list textarea, .bulk-list button')
     .forEach(n => { n.disabled = on; });
+  if (!on) renderBulkVoice();  // keeps Style/Timing off while the script comes from captions
   syncBulkButtons();
 }
 
@@ -5813,7 +6888,10 @@ $('#open-bulk').addEventListener('click', () => {
   bulk.status.clear();
   renderAiLang();
   renderBulkVoice();
+  renderBulkHook();
   renderBulkAccounts();
+  if (new Date(bulkSched().start).getTime() < Date.now()) bulkSched().start = '';  // last time's slot has passed
+  renderBulkSched();
   if (!bulkDlg.open) bulkDlg.showModal();
 });
 bulkDlg.addEventListener('click', e => {
@@ -5841,7 +6919,7 @@ $('#bulk-prepare').addEventListener('click', async () => {
   const redo = $('#bulk-redo').checked, chosen = state.clips.filter(c => bulk.picks.has(c));
   const ps = bulkPlatforms().length ? bulkPlatforms() : ['youtube'];
   const missing = c => ps.filter(p => !textReady(c, p));
-  const back = state.sel;
+  const back = state.sel, { mine } = bulkLooks([]);
   setBulkRunning(true);
   let n = 0, failed = 0;
   for (const c of chosen) {
@@ -5857,28 +6935,55 @@ $('#bulk-prepare').addEventListener('click', async () => {
           await writePost(c);
         }
       }
+      if (hookOn()) {
+        await bulkWriteHook(c, redo, say);
+        applyHook(c);
+        syncSelectedHook(c);
+      }
       if (redo || !thumbReady(c)) await makeThumb(c, say);
       thumbOf(c).on = true;
       if (voiceOn()) {
         const n = applyVoice(c);
-        if (redo || !n.text.trim()) {
-          if (!state.ai) throw new Error('writing the voice-over script needs the local AI model; type it yourself');
+        if (bulkVoice().src === 'captions') {
+          // Always the captions transcribed from this clip's audio, each line at the moment it's said.
+          const s = audioCaptionScript(c);
+          if (!s) throw new Error('no speech was transcribed in this clip\'s audio, so there are no captions to voice. Use "AI writes it" or untick the clip');
+          if (redo || n.text !== s.text) n.text = n.capText = s.text;
+        } else if (redo || !narrFromSource(c)) {
+          if (!state.ai) throw new Error('writing the voice-over script needs the local AI model');
           say('Writing the voice-over script…');
           select(state.clips.indexOf(c));  // the script writer works on the selected clip
-          if (redo && n.text === n.aiText) n.text = '';  // a fresh take, not steered by the old AI script
+          n.text = '';  // the AI writes it fresh, not steered by typed or older text
           if (!await writeNarrScript()) throw new Error($('#narr-note').textContent.replace(/^AI failed: /, ''));
         }
-        if (!n.audio || narrStale(c)) { say('Making the voice…'); await generateNarr(c); }
+        // A saved render already has the voice in it; the audio is only made when something still needs rendering.
+        const needed = !bulkAccounts().length || looksMissing(c, bulkAccounts()).length;
+        if (needed && (!n.audio || narrStale(c))) { say('Making the voice…'); await generateNarr(c); }
+      }
+      // The final clip, once per branding look: these previews are the files step 2 uploads.
+      const todo = looksMissing(c, bulkAccounts()), idx = state.clips.indexOf(c);
+      for (const [k, g] of todo.entries()) {
+        if (bulk.stop) break;
+        say(`Rendering the preview${todo.length > 1 ? ` (${k + 1} of ${todo.length}: ${g.accounts.map(a => a.label).join(', ')})` : ''}… keep this tab visible.`);
+        $('#bulk-note').textContent = `Rendering clip ${idx + 1} (${n} of ${chosen.length})… keep this tab visible.`;
+        await setBranding(g.look);
+        drawBannerPreview();
+        select(idx);
+        try { await renderClip(); } finally { endExport(); }
       }
       const left = missing(c);
-      setBulkStatus(c, left.length ? `Thumbnail ready. Type the ${left.map(p => p === 'youtube' ? 'YouTube title' : PLATFORM_NAMES[p] + ' caption').join(' and ')}.`
-        : 'Ready.', left.length ? '' : 'ok');
+      setBulkStatus(c, left.length ? `Preview rendered. Type the ${left.map(p => p === 'youtube' ? 'YouTube title' : PLATFORM_NAMES[p] + ' caption').join(' and ')}.`
+        : !bulkAccounts().length ? 'Thumbnail and text ready. Tick an account to render its preview.'
+        : !previewsReady(c) ? 'Preview not rendered yet. Run step 1 again.'
+        : 'Ready: preview rendered.', left.length || !previewsReady(c) ? '' : 'ok');
     } catch (e) {
       failed++;
       setBulkStatus(c, 'Failed: ' + e.message, 'err');
     }
     refreshBulkRow(c);
   }
+  await setBranding(mine);
+  drawBannerPreview();
   setBulkRunning(false);
   if (state.sel !== back && state.clips[back]) select(back);
   renderPost();
@@ -5894,7 +6999,8 @@ async function bulkPost(c, a, media_id, fields) {
       if (j.status === 'error') throw new Error(j.error);
       if (j.status === 'done') {
         // Remember the video, so a thumbnail YouTube refused can be set again later.
-        (postOf(c).sent ||= {})[a.id] = { at: Date.now(), video: j.video_id || null, thumb: j.thumb_set ?? null };
+        (postOf(c).sent ||= {})[a.id] = { at: Date.now(), video: j.video_id || null, thumb: j.thumb_set ?? null,
+          ...(j.scheduled_at ? { scheduled: j.scheduled_at * 1000 } : {}) };
         const noThumb = j.thumb_set === false;
         setBulkStatus(c, j.message, noThumb ? 'warn' : 'ok', { acct: a, url: j.url, copy: j.draft ? fields.caption || null : null,
           retry: noThumb && j.video_id ? () => retryThumb(c, a) : null });
@@ -5911,11 +7017,12 @@ async function bulkPost(c, a, media_id, fields) {
 // Accounts that share a look (banner image, logo, handle) share one render, as in the Publish panel.
 // `mine` is the editor's own look, put back afterwards.
 function bulkLooks(accts) {
-  const mine = { acct: banner.acct, img: banner.img, logo: banner.logo, text: banner.text };
+  const mine = { acct: banner.acct, img: banner.img, logo: banner.logo, text: banner.text, follow: undefined };
   const groups = new Map();
   for (const a of accts) {
-    const look = banner.on ? { ...mine, ...brandingOf(a) } : mine;
-    const key = JSON.stringify([look.img, look.logo, look.text]);
+    // The Follow me card is always the account's own (none when it has none), banner or not.
+    const look = { ...(banner.on ? { ...mine, ...brandingOf(a) } : mine), follow: followOf(a) };
+    const key = JSON.stringify([look.img, look.logo, look.text, look.follow]);
     if (!groups.has(key)) groups.set(key, { look, accounts: [] });
     groups.get(key).accounts.push(a);
   }
@@ -5952,6 +7059,8 @@ $('#bulk-publish').addEventListener('click', async () => {
   if (!accts.length || !chosen.length) return;
   const opts = Object.fromEntries(bulkPlatforms().map(p => [p, bulkSettings(p)]));
   if (opts.tiktok && opts.tiktok.mode !== 'draft' && !opts.tiktok.privacy) { $('#bulk-note').textContent = 'Choose who can view the TikTok posts.'; return; }
+  const times = schedTimes(), late = schedProblem();
+  if (late) { $('#bulk-note').textContent = late; return; }
   const tooLong = (c, a) => {
     const max = state.creators[a.id]?.max_video_post_duration_sec;
     return a.platform === 'youtube' && clipLen(c) > 180 ? 'YouTube Shorts can be at most 3 minutes.'
@@ -5969,6 +7078,7 @@ $('#bulk-publish').addEventListener('click', async () => {
       total++;
       const post = postOf(c), th = post.thumb, idx = state.clips.indexOf(c);
       for (const [p, o] of Object.entries(opts)) Object.assign(post[p], o);
+      applyHook(c);  // a changed hook or position makes the saved preview stale, so it's rendered again below
       if (voiceOn()) applyVoice(c);  // renderClip makes the voice if it's missing or the script changed
       setBulkStatus(c, '');
       let thumbUrl = null;
@@ -5983,14 +7093,22 @@ $('#bulk-publish').addEventListener('click', async () => {
         g++;
         if (!go.length) continue;
         const of = groups.size > 1 ? ` (look ${g} of ${groups.size})` : '';
-        $('#bulk-note').textContent = `Rendering clip ${idx + 1} (${n} of ${chosen.length})${of}… keep this tab visible.`;
+        $('#bulk-note').textContent = `Uploading clip ${idx + 1} (${n} of ${chosen.length})${of}…`;
         try {
-          await setBranding(look);
-          drawBannerPreview();
-          select(idx);
-          setBulkStatus(c, `Rendering${of}…`);
-          let blob;
-          try { ({ blob } = await renderClip()); } finally { endExport(); }
+          let pvr = previewOf(c, look);
+          if (!pvr) {
+            // Generated earlier but not rendered in this session (or changed since): render it now.
+            setBulkStatus(c, `Rendering the preview${of}… keep this tab visible.`);
+            $('#bulk-note').textContent = `Rendering clip ${idx + 1} (${n} of ${chosen.length})${of}… keep this tab visible.`;
+            await setBranding(look);
+            drawBannerPreview();
+            select(idx);
+            try { await renderClip(); } finally { endExport(); }
+            pvr = previewOf(c, look);
+            if (!pvr) throw new Error('the preview could not be rendered. Run step 1 again.');
+            $('#bulk-note').textContent = `Uploading clip ${idx + 1} (${n} of ${chosen.length})${of}…`;
+          }
+          const { blob } = pvr;
           if (th?.on && th.t != null && !thumbUrl && go.some(a => a.platform === 'youtube')) thumbUrl = await thumbJPEG(c, th);
           setBulkStatus(c, `Converting to MP4${of}…`);
           const { media_id } = await api('/api/media', { method: 'POST', body: blob, headers: { 'Content-Type': 'application/octet-stream' } });
@@ -5998,8 +7116,9 @@ $('#bulk-publish').addEventListener('click', async () => {
           for (const a of go) {
             const cover = !(th?.on && th.t != null) ? {} : a.platform === 'youtube' ? (thumbUrl ? { thumb: thumbUrl } : {})
               : { cover_ms: Math.round(clamp(th.t - c.start, 0, clipLen(c)) * 1000) };
+            const when = times ? { schedule_at: Math.round(times[chosen.indexOf(c)] / 1000) } : {};
             setBulkStatus(c, 'uploading…', '', { acct: a });
-            uploads.push(bulkPost(c, a, media_id, { ...publishFields(a.platform, post), ...cover }));
+            uploads.push(bulkPost(c, a, media_id, { ...publishFields(a.platform, post), ...cover, ...when }));
           }
         } catch (e) {
           setBulkStatus(c, 'Failed: ' + e.message, 'err');
@@ -6013,7 +7132,7 @@ $('#bulk-publish').addEventListener('click', async () => {
     const noThumbs = chosen.reduce((s, c) => s + accts.filter(a => postOf(c).sent?.[a.id]?.thumb === false).length, 0);
     for (const c of chosen) if (accts.every(a => sentTo(c, a))) bulk.picks.delete(c);
     setBulkRunning(false);
-    $('#bulk-note').textContent = `Done: ${ok} of ${results.length} uploads published (${total} clip${total > 1 ? 's' : ''} to ${accts.length} account${accts.length > 1 ? 's' : ''}).`
+    $('#bulk-note').textContent = `Done: ${ok} of ${results.length} uploads ${times ? 'scheduled' : 'published'} (${total} clip${total > 1 ? 's' : ''} to ${accts.length} account${accts.length > 1 ? 's' : ''}).`
       + (results.length - ok ? ` ${results.length - ok} failed; see each clip.` : '') + (left ? ` ${left} clip${left > 1 ? 's' : ''} stopped before publishing.` : '')
       + (noThumbs ? ` ${noThumbs} YouTube thumbnail${noThumbs > 1 ? 's' : ''} didn't stick: use Retry thumbnail on ${noThumbs > 1 ? 'those clips' : 'that clip'}.` : '');
   } finally {
@@ -6058,7 +7177,7 @@ function renderPreviewInfo(c) {
   const sent = accts.filter(a => sentTo(c, a));
   secs.push(el('div', { className: 'pv-sec' },
     el('h3', {}, `Clip ${idx + 1}`, el('small', { textContent: `${fmt(c.start)} – ${fmt(c.end)} · ${Math.round(clipLen(c))} s · ${state.aspect}` })),
-    ...(c.hook ? pvKV('On-screen hook', c.hook) : []),
+    ...(c.hook ? pvKV('On-screen hook', hookPlain(c.hook)) : []),
     ...pvKV('Music', music),
     ...(sent.length ? pvKV('Already published to', sent.map(a => a.label).join(', ')) : [])));
   // Thumbnail
@@ -6149,7 +7268,7 @@ async function showPreview() {
     video.src = r.url;
     $('#pv-busy').hidden = true;
     video.play().catch(() => {});
-    $('#pv-note').textContent = `${(r.blob.size / 1048576).toFixed(1)} MB. Publishing reuses this render as long as nothing in the clip changes.`
+    $('#pv-note').textContent = `${(r.blob.size / 1048576).toFixed(1)} MB. This is the file that gets uploaded; change anything in the clip and it needs a new preview.`
       + (r.upscale > 1.5 ? ` The source only has ${r.source} of picture for this crop, so it's enlarged ${r.upscale.toFixed(1)}×.` : '');
     renderPreviewInfo(c);  // the voice may have just been made
   } catch (e) {

@@ -144,7 +144,8 @@ def analyze_frames(src: Path, duration: float, job: dict) -> tuple[list[float], 
 
     - motion: mean frame difference (action, crashes and cuts spike it), used to score moments;
     - track: where the interest is horizontally (0..1) in each frame, for auto-reframing vertical crops.
-      Faces win (the one moving most, i.e. talking); otherwise the centre of the movement; None when
+      Faces win, and the camera stays locked on one person per shot (switching only when another face
+      clearly dominates for 2 s); otherwise the centre of the movement; None when
       nothing stands out. Scene cuts are listed so the virtual camera can jump instead of panning.
     """
     import cv2
@@ -186,7 +187,7 @@ def analyze_frames(src: Path, duration: float, job: dict) -> tuple[list[float], 
         print("GPU video decoding unavailable; analyzing motion on the CPU")
     motion, xs, kinds, cuts = [], [], [], []
     prev_small = prev_gray = None
-    last_face, last_face_i = None, -99
+    last_face, last_face_i, rival_n = None, -99, 0
     for buf in itertools.chain([first], iter(lambda: proc.stdout.read(size), b"")):
         if len(buf) != size:
             break
@@ -200,24 +201,39 @@ def analyze_frames(src: Path, duration: float, job: dict) -> tuple[list[float], 
         recent = motion[-9:-1]
         if recent and m > 25 and m > 4 * (sorted(recent)[len(recent) // 2] + 1):
             cuts.append(i)
-            last_face, last_face_i = None, -99
+            last_face, last_face_i, rival_n = None, -99, 0
         diff = np.abs(gray - prev_gray) if prev_gray is not None else None
 
         x, kind = None, "n"
         if detector is not None and i % 2 == 0:  # faces at 2 fps is plenty
             _, faces = detector.detect(bgr)
-            best = None
+            cands = []
             for f in faces if faces is not None else []:
                 fx, fy, fw, fh = (int(v) for v in f[:4])
                 if fw < 10:
                     continue
                 act = float(diff[max(0, fy):fy + fh, max(0, fx):fx + fw].mean()) if diff is not None else 0.0
-                score = fw * fh * (1 + act / 4)  # bigger and moving (talking) faces win
-                if best is None or score > best[0]:
-                    best = (score, (fx + fw / 2) / W)
-            if best:
-                last_face, last_face_i = best[1], i
-        if last_face is not None and i - last_face_i <= 4:  # hold a face for 1 s between detections
+                cands.append((fw * fh * (1 + act / 4), (fx + fw / 2) / W, fw / W))  # bigger and moving (talking) faces win
+            if cands:
+                # Stay locked on one person: the face nearest the one being followed keeps the camera unless
+                # another face clearly wins (3x the score) for 2 s in a row. Otherwise the crop would hop between
+                # people whenever someone else moves or nods, e.g. when the narrator is off screen.
+                best = max(cands)
+                held = last_face is not None and i - last_face_i <= 12
+                near = [c for c in cands if held and abs(c[1] - last_face) < max(0.08, c[2] * 1.2)]
+                mine = min(near, key=lambda c: abs(c[1] - last_face)) if near else None
+                if not held:
+                    pick, rival_n = best, 0  # nobody followed yet (or lost for 3 s): take the main face
+                elif mine is not None and (best is mine or best[0] < 3 * mine[0]):
+                    pick, rival_n = mine, 0
+                else:  # followed face hidden, or someone else clearly dominates: switch only after 2 s
+                    rival_n += 1
+                    pick = best if rival_n >= 4 else mine
+                    if pick is best:
+                        rival_n = 0
+                if pick is not None:
+                    last_face, last_face_i = pick[1], i
+        if last_face is not None and i - last_face_i <= 12:  # hold the followed face for 3 s while it's hidden
             x, kind = last_face, "f"
         elif diff is not None:
             cols = diff.mean(axis=0) ** 2

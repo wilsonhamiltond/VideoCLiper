@@ -50,7 +50,8 @@ class PublishError(Exception):
 #               fb_page? (wanted Facebook Page: name or ID), fb_page_id? (the Page actually connected),
 #               yt_channel? (wanted channel: "@handle" or "UC…"), yt_channel_id?, yt_handle? (the channel actually connected),
 #               brand_banner?, brand_logo? (branding images as data: URLs, the defaults for the clip banner),
-#               brand_handle? (the @name drawn on clips)}
+#               brand_handle? (the @name drawn on clips),
+#               follow_on?, follow_text?, follow_btn?, follow_at?, follow_dur? (the "Follow me" scene in clips)}
 # Any number of each per platform; several accounts can share one app.
 KEYS = ("client_id", "client_secret", "config_id")
 
@@ -394,7 +395,8 @@ def _public(a: dict, apps: list[dict]) -> dict:
             "fb_page": a.get("fb_page"), "fb_page_id": a.get("fb_page_id"),
             "configured": bool(app and app.get("client_id") and app.get("client_secret")),
             "connected": bool(a.get("token")), "name": a.get("name"),
-            "brand_banner": a.get("brand_banner"), "brand_logo": a.get("brand_logo"), "brand_handle": a.get("brand_handle")}
+            "brand_banner": a.get("brand_banner"), "brand_logo": a.get("brand_logo"), "brand_handle": a.get("brand_handle"),
+            **{k: a.get(k) for k in ("follow_on", "follow_text", "follow_btn", "follow_at", "follow_dur")}}
 
 
 def _find(acct_id: str) -> dict:
@@ -528,6 +530,20 @@ def _account_fields(body: dict, platform: str) -> dict:
             out[k] = _brand_image(body[k], what)
     if "brand_handle" in body:  # the @name drawn on clips; empty means the channel handle / username
         out["brand_handle"] = (_clean(body.get("brand_handle")) or "")[:40] or None
+    # "Follow me" scene: a card with the logo, handle and a Follow button shown for a few seconds in each clip.
+    if "follow_on" in body:
+        out["follow_on"] = bool(body.get("follow_on")) or None
+    if "follow_text" in body:
+        out["follow_text"] = (_clean(body.get("follow_text")) or "")[:60] or None
+    if "follow_btn" in body:
+        out["follow_btn"] = (_clean(body.get("follow_btn")) or "")[:20] or None
+    if "follow_at" in body:  # where in the clip: start, middle or end
+        out["follow_at"] = body.get("follow_at") if body.get("follow_at") in ("start", "middle", "end") else None
+    if "follow_dur" in body:
+        try:
+            out["follow_dur"] = min(8.0, max(1.5, float(body.get("follow_dur"))))
+        except (TypeError, ValueError):
+            out["follow_dur"] = None
     return out
 
 
@@ -686,14 +702,18 @@ def publish_youtube(acct_id: str, path: Path, f: dict, job: dict) -> dict:
                     "tags": tags, "categoryId": str(f.get("category") or "22")},
         "status": {"privacyStatus": f.get("privacy") or "private", "selfDeclaredMadeForKids": False},
     }
+    at = _schedule_at(f)
+    if at:  # YouTube keeps it private and makes it public at publishAt
+        meta["status"].update(privacyStatus="private", publishAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at)))
     _, h, _ = http("POST", "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
                    body=meta, headers={"Authorization": f"Bearer {tok}", "X-Upload-Content-Type": "video/mp4",
                                        "X-Upload-Content-Length": str(path.stat().st_size)})
     job["status"] = "uploading to YouTube"
     _, _, video = http("PUT", h["Location"], raw=path.read_bytes(), timeout=900,
                        headers={"Authorization": f"Bearer {tok}", "Content-Type": "video/mp4"})
-    message = f"Uploaded to {_channel_text(ch)} as {video.get('status', {}).get('privacyStatus', meta['status']['privacyStatus'])}."
-    out = {"url": f"https://youtube.com/shorts/{video['id']}", "video_id": video["id"]}
+    message = (f"Uploaded to {_channel_text(ch)}; private until it goes public {_when(at)}." if at else
+               f"Uploaded to {_channel_text(ch)} as {video.get('status', {}).get('privacyStatus', meta['status']['privacyStatus'])}.")
+    out = {"url": f"https://youtube.com/shorts/{video['id']}", "video_id": video["id"], **({"scheduled_at": at} if at else {})}
     thumb = _thumb_bytes(f.get("thumb"))
     if f.get("thumb") and not thumb:
         return {**out, "thumb_set": False, "message": message + " The thumbnail wasn't set: the image was empty or over 2 MB."}
@@ -911,12 +931,17 @@ def publish_facebook(acct_id: str, path: Path, f: dict, job: dict) -> dict:
     http("POST", start.get("upload_url") or f"https://rupload.facebook.com/video-upload/v26.0/{video_id}",
          raw=path.read_bytes(), timeout=900,
          headers={"Authorization": f"OAuth {tok}", "offset": "0", "file_size": str(path.stat().st_size)})
-    job["status"] = "publishing on Facebook"
+    at = _schedule_at(f)
+    job["status"] = "scheduling on Facebook" if at else "publishing on Facebook"
     _, _, fin = http("POST", f"{GRAPH}/{page}/video_reels", form={
-        "upload_phase": "finish", "video_id": video_id, "video_state": "PUBLISHED",
+        "upload_phase": "finish", "video_id": video_id, "video_state": "SCHEDULED" if at else "PUBLISHED",
+        **({"scheduled_publish_time": str(at)} if at else {}),
         "description": (f.get("caption") or "")[:2200], "access_token": tok})
     if fin.get("success") is False:
         raise PublishError(f"Facebook didn't accept the Reel: {fin}")
+    if at:
+        return {"url": f"https://www.facebook.com/reel/{video_id}", "video_id": video_id, "scheduled_at": at,
+                "message": f"Scheduled on {acct.get('name') or 'your Page'} for {_when(at)}."}
     job["status"] = "Facebook is processing"
     for _ in range(60):
         time.sleep(5)
@@ -948,11 +973,24 @@ def publish(body: dict):
         raise HTTPException(400, "The rendered clip expired. Publish again to re-render it.")
     if platform == "youtube" and not (body.get("title") or "").strip():
         raise HTTPException(400, "YouTube needs a title.")
+    at = _schedule_at(body)
+    if body.get("schedule_at") and not at:
+        raise HTTPException(400, "The scheduled time isn't valid.")
+    if at:
+        soonest = time.time() + (10 * 60 if platform == "facebook" else 60)
+        if at < soonest:
+            raise HTTPException(400, f"The scheduled time is too soon for {NAMES[platform]}"
+                                     + (" (Facebook needs at least 10 minutes)." if platform == "facebook" else "."))
+        if platform == "facebook" and at > time.time() + 29 * 86400:
+            raise HTTPException(400, "Facebook can schedule Reels up to 29 days ahead.")
     job_id = uuid.uuid4().hex
     job = _jobs[job_id] = {"status": "starting", "platform": platform, "account": acct["id"]}
 
     def run():
         try:
+            if at and platform not in NATIVE_SCHEDULE:
+                job.update(status="done", **_queue(acct, path, body, at))
+                return
             job.update(status="done", **PUBLISHERS[platform](acct["id"], path, body, job))
         except PublishError as e:
             job.update(status="error", error=str(e))
@@ -971,3 +1009,124 @@ def publish_status(job_id: str):
     if job["status"] in ("done", "error"):
         _jobs.pop(job_id)
     return job
+
+
+# ---------- scheduled posts ----------
+# YouTube and Facebook schedule natively: the video is uploaded now and goes live at the chosen time.
+# Instagram and TikTok have no scheduling in their APIs, so the clip is kept in data/scheduled/ and this
+# server posts it when the time comes (it has to be running then). Queue: data/scheduled.json.
+NATIVE_SCHEDULE = ("youtube", "facebook")
+SCHEDULED = DATA / "scheduled.json"
+SCHEDULED_DIR = DATA / "scheduled"
+_sched_lock = threading.Lock()
+
+
+def _schedule_at(f: dict) -> int | None:
+    """The time to publish at (Unix seconds), or None to publish now."""
+    try:
+        at = int(float(f.get("schedule_at") or 0))
+    except (TypeError, ValueError):
+        return None
+    return at if at > 0 else None
+
+
+def _when(at: int) -> str:
+    return time.strftime("%a %d %b %Y, %H:%M", time.localtime(at))
+
+
+def _sched_read() -> list[dict]:
+    try:
+        return json.loads(SCHEDULED.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return []
+
+
+def _sched_write(items: list[dict]):
+    DATA.mkdir(parents=True, exist_ok=True)
+    tmp = SCHEDULED.with_suffix(".tmp")
+    tmp.write_text(json.dumps(items, indent=1), encoding="utf-8")
+    tmp.replace(SCHEDULED)
+
+
+def _queue(acct: dict, path: Path, body: dict, at: int) -> dict:
+    SCHEDULED_DIR.mkdir(parents=True, exist_ok=True)
+    item_id = _new_id()
+    dst = SCHEDULED_DIR / f"{item_id}.mp4"
+    shutil.copyfile(path, dst)
+    fields = {k: v for k, v in body.items() if k not in ("account", "media_id", "thumb", "schedule_at")}
+    with _sched_lock:
+        items = _sched_read()
+        items.append({"id": item_id, "account": acct["id"], "platform": acct["platform"], "at": at,
+                      "file": dst.name, "fields": fields, "status": "waiting"})
+        _sched_write(items)
+    return {"url": None, "scheduled_at": at, "scheduled_id": item_id,
+            "message": f"Scheduled for {_when(at)}. ViralClip posts it then, so keep server.py running at that time."}
+
+
+def _run_due():
+    with _sched_lock:
+        items = _sched_read()
+        due = [i for i in items if i["status"] == "waiting" and i["at"] <= time.time()]
+        for i in due:
+            i["status"] = "posting"
+        if due:
+            _sched_write(items)
+    for item in due:
+        path = SCHEDULED_DIR / item["file"]
+        job = {"status": "starting"}
+        try:
+            if not path.exists():
+                raise PublishError("the saved clip is missing")
+            res = PUBLISHERS[item["platform"]](item["account"], path, item["fields"], job)
+            update = {"status": "done", "url": res.get("url"), "message": res.get("message"), "posted": time.time()}
+        except Exception as e:
+            update = {"status": "error", "error": str(e), "posted": time.time()}
+        path.unlink(missing_ok=True)
+        with _sched_lock:
+            items = _sched_read()
+            for i in items:
+                if i["id"] == item["id"]:
+                    i.update(update)
+            _sched_write(items)
+
+
+def _scheduler():
+    # A post that was mid-way when the server stopped isn't retried blindly (it may have gone out).
+    with _sched_lock:
+        items = _sched_read()
+        if any(i["status"] == "posting" for i in items):
+            for i in items:
+                if i["status"] == "posting":
+                    i.update(status="error", error="The server stopped while posting; check the account and post again if needed.")
+            _sched_write(items)
+    while True:
+        try:
+            _run_due()
+        except Exception as e:  # keep the scheduler alive
+            print("scheduled posts:", e)
+        time.sleep(30)
+
+
+@router.get("/api/scheduled")
+def scheduled():
+    """Posts this server will publish later (Instagram, TikTok), and how the past ones went."""
+    with _sched_lock:
+        return [{k: v for k, v in i.items() if k != "fields"} for i in _sched_read()]
+
+
+@router.delete("/api/scheduled/{item_id}")
+def cancel_scheduled(item_id: str):
+    with _sched_lock:
+        items = _sched_read()
+        item = next((i for i in items if i["id"] == item_id), None)
+        if not item:
+            raise HTTPException(404, "unknown scheduled post")
+        if item["status"] != "waiting":
+            raise HTTPException(400, "That post isn't waiting any more.")
+        (SCHEDULED_DIR / item["file"]).unlink(missing_ok=True)
+        items.remove(item)
+        _sched_write(items)
+    return {"ok": True}
+
+
+threading.Thread(target=_scheduler, daemon=True, name="scheduled-posts").start()

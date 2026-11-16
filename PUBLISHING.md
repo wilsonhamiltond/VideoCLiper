@@ -93,6 +93,13 @@ Reels go to a **Facebook Page** you manage. Meta's API can't post to a personal 
 - In development mode, only people with a role on the app (you) can connect, and posts may be visible only to them until the app is live.
 - The Page login doesn't expire on its own; connect again if you change your Facebook password or remove the app's access.
 
+## Scheduling (Publish all)
+
+Tick **Schedule** in Publish all, pick when the first clip goes live and how far apart the rest are.
+
+- **YouTube** and **Facebook** schedule natively: the clip is uploaded right away (YouTube keeps it private) and the platform publishes it at its time. Facebook needs 10 minutes to 29 days of notice.
+- **Instagram** and **TikTok** have no scheduling in their APIs, so ViralClip keeps the clip in `data/scheduled/` and posts it itself at its time. `server.py` must be running then; a post whose time passed while it was off goes out as soon as it starts again. `GET /api/scheduled` lists the queue and `DELETE /api/scheduled/{id}` cancels a waiting post.
+
 ## Troubleshooting
 - **"redirect_uri mismatch" or "invalid redirect":** the URI in the developer console must match exactly, including `localhost` (not `127.0.0.1`), the port, and the trailing path.
 - **"isn't connected" / "login expired":** click Connect again.
