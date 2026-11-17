@@ -9,6 +9,7 @@ Turn a long video into short vertical clips: find the best moments, add word-by-
 - `clone.py` / `voice_server.py` – voice cloning for the reader (Chatterbox, runs in `.venv-voice`)
 - `fetch.py` – imports videos and live streams from a link with [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 - `stock.py` – makes a short from stock footage: searches [Pexels](https://www.pexels.com/api/) by topic and merges the clips
+- `guide.py` – makes a full narrated video from a written guide (sections with Visual / Narración), using your YouTube clips and stock footage
 - `music.py` – background music library (`data/music/`)
 - `ANALYSIS.md` – notes on the reference product (viralclip.tech)
 
@@ -63,6 +64,34 @@ Press **Stock video** next to **Import link**, type a topic (e.g. `motivation`) 
 - **API key:** needs a free Pexels key from https://www.pexels.com/api/. Paste it in the dialog once; it's kept in `data/stock.json`, or set `PEXELS_API_KEY`. Pexels allows 200 searches an hour.
 - **Rights:** Pexels videos are free to use and edit, with no attribution required. The progress message names the creators if you want to credit them.
 - English keywords find the most clips, even for a voice-over in another language.
+
+## Video from a guide
+Press **Video from guide** next to **Stock video**, paste a guide and press **Create the video**. Example: [guides/raices-cuando-la-fama-no-basta.txt](guides/raices-cuando-la-fama-no-basta.txt).
+
+```
+Título de trabajo: Cuando la fama no basta
+1. Apertura (0:00 - 0:45)
+* Visual: conciertos llenos, autos de lujo, aplausos.
+* Narración: "Texto que lee la voz…"
+
+2. Primer caso: Paramba — El peso de no olvidar de dónde vienes (0:45 - 2:15)
+* Visual: Paramba en tarima… [Paramba rompe en llanto](https://studio.youtube.com/video/6N1TUMUHI-M)
+* Narración: "…para estudiar música. (Inserto 0:04-0:24) Ese quiebre nos recuerda…"
+```
+- **Sections:** a numbered heading, then `Visual:` and `Narración:` (or `Narration:`). The time ranges in headings are only estimates: the voice sets the real length.
+- **Voice:** each narration line is read by an Edge neural voice (Emilio, Dominican Republic, by default), with a short breath between lines.
+- **Your clips:** YouTube links in `Visual:` (studio.youtube.com, youtube.com, youtu.be, shorts) are downloaded once to `downloads/guide-cache/` and reused. Under the voice they alternate with stock shots, muted, fitted over a blurred copy of themselves so vertical Shorts work in 16:9.
+- **Find with AI** on a section: the local Ollama model reads the section (names, the interview or moment it describes) and writes a few YouTube searches, like `Bulín 47 Miami` or `Paramba entrevista`. The server runs them with yt-dlp (no API key) and shows the videos with thumbnail, length, channel and views. Press **Add** to link one to the section, click the thumbnail to watch it on YouTube, click a search to run it alone, or type your own. Without Ollama it searches the section heading. Long videos need a time range in the insert, e.g. `(Inserto 12:05-12:30)`. Use videos you have the rights to.
+- **Add link…** on a section takes a YouTube link (studio.youtube.com and Shorts links too) or a TikTok, Instagram, Facebook or X link. The server checks it, gets the title and adds `[title](link)` to that section's `Visual:` line; it downloads when you create the video. Use it when a pasted guide lost its links.
+- **Your own videos:** **Upload…** on a section picks one or more files from this computer (MP4, MOV, MKV, WEBM…). They're uploaded to `downloads/guide-cache/` and linked into that section's `Visual:` line as `[name](video:<id>)`, then used just like the YouTube clips. Browser and screen recordings without a length in the file are re-saved as MP4 once. Links from TikTok, Instagram, Facebook, X or any site yt-dlp supports work too.
+- **Clip inserts:** a parenthesis in the narration, like `(Breve inserto de su testimonio)`, stops the voice and plays the section's clip with its own sound. Put a time range in it, `(Inserto 0:12-0:31)`, to pick the moment; otherwise the first 20 s play (changeable in the dialog). With several clips in a section, inserts use them in order; `(Video 2 0:05-0:20)` picks the second one, and `(Video 2 completo)` plays all of it. A parenthesis in a section without a clip is a 1.2 s pause.
+- **Stock footage:** the local Ollama model turns each `Visual:` line into English Pexels searches (`empty recording studio`, `highway at night`…). Without Ollama the Spanish text is searched directly. The opening section cuts twice as fast. Needs the Pexels key from **Stock video**.
+- **Titles:** a heading with a dash (`Primer caso: Paramba — El peso…`) shows the part after `caso:` on screen for 4 s.
+- **Result:** one finished MP4 (1920×1080, or 1080×1920 for 9:16) with voice, inserts and low background music, plus `downloads/<id>.srt` subtitles to upload to YouTube. It opens in the editor as one clip.
+- **Command line:** `.venv\Scripts\python guide.py guides\my-guide.txt --music <track id> --format 16:9` (`--parse-only` just shows the sections it found).
+- **In the background:** **Create the video** starts the job on the server and returns at once, so you can keep working (or close the tab). The bell at the top right shows a spinning ring while videos are being made; its panel shows each one's step and %, with **Cancel**. When one finishes you get a toast, a red badge on the bell and, if you turned on desktop alerts in the panel, a system notification while the tab is in the background. **Open in editor**, **Download** and **Subtitles** are in the panel. Notifications are kept in `data/notifications.json`, so a video that finished while the page was closed is still there; a job cut off by a server restart is marked as failed.
+- **Time:** a 6-minute video takes a few minutes, mostly downloads and encoding. Downloaded clips and stock files are reused on the next run.
+- **Rights:** use clips you own or have permission for. Pexels footage is free to use.
 
 ## Follow me scene
 A card with your logo, @handle, a short message and a **Follow** button pops up over the video for a few seconds (the sound keeps playing).

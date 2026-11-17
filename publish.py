@@ -360,10 +360,21 @@ def access_token(acct_id: str) -> str:
     if token["expires_at"] > time.time() + 60:
         return token["access_token"]
     if platform == "youtube" and token.get("refresh_token"):
-        _, _, t = http("POST", "https://oauth2.googleapis.com/token", form={
-            "client_id": acct["client_id"], "client_secret": acct["client_secret"],
-            "refresh_token": token["refresh_token"], "grant_type": "refresh_token",
-        })
+        try:
+            _, _, t = http("POST", "https://oauth2.googleapis.com/token", form={
+                "client_id": acct["client_id"], "client_secret": acct["client_secret"],
+                "refresh_token": token["refresh_token"], "grant_type": "refresh_token",
+            })
+        except PublishError as e:
+            if "invalid_grant" not in str(e):
+                raise
+            # Google revoked the login. Drop it so the account shows as not connected.
+            update(acct_id, token=None)
+            raise PublishError(
+                f"Google ended the login for {acct['label']}, so it needs connecting again: open Accounts and click "
+                "Connect. If this happens about once a week, your Google Cloud app is still in Testing mode, and "
+                "Google expires Testing logins after 7 days. To stop it, open Google Cloud Console > Google Auth "
+                "Platform > Audience and click Publish app.") from None
         token.update(access_token=t["access_token"], expires_at=time.time() + t.get("expires_in", 3600))
     elif platform == "tiktok" and token.get("refresh_expires_at", 0) > time.time():
         _, _, t = http("POST", "https://open.tiktokapis.com/v2/oauth/token/", form={
@@ -537,8 +548,18 @@ def _account_fields(body: dict, platform: str) -> dict:
         out["follow_text"] = (_clean(body.get("follow_text")) or "")[:60] or None
     if "follow_btn" in body:
         out["follow_btn"] = (_clean(body.get("follow_btn")) or "")[:20] or None
-    if "follow_at" in body:  # where in the clip: start, middle or end
-        out["follow_at"] = body.get("follow_at") if body.get("follow_at") in ("start", "middle", "end") else None
+    if "follow_at" in body:  # where in the clip: start, middle, end, or seconds from the clip start
+        at = body.get("follow_at")
+        if at in ("start", "middle", "end"):
+            out["follow_at"] = at
+        elif isinstance(at, bool):
+            out["follow_at"] = None
+        else:
+            try:
+                secs = float(at)
+                out["follow_at"] = round(min(3600.0, secs), 1) if secs >= 0 and secs == secs else None
+            except (TypeError, ValueError):
+                out["follow_at"] = None
     if "follow_dur" in body:
         try:
             out["follow_dur"] = min(8.0, max(1.5, float(body.get("follow_dur"))))
@@ -705,22 +726,155 @@ def publish_youtube(acct_id: str, path: Path, f: dict, job: dict) -> dict:
     at = _schedule_at(f)
     if at:  # YouTube keeps it private and makes it public at publishAt
         meta["status"].update(privacyStatus="private", publishAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at)))
-    _, h, _ = http("POST", "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
-                   body=meta, headers={"Authorization": f"Bearer {tok}", "X-Upload-Content-Type": "video/mp4",
-                                       "X-Upload-Content-Length": str(path.stat().st_size)})
-    job["status"] = "uploading to YouTube"
-    _, _, video = http("PUT", h["Location"], raw=path.read_bytes(), timeout=900,
-                       headers={"Authorization": f"Bearer {tok}", "Content-Type": "video/mp4"})
-    message = (f"Uploaded to {_channel_text(ch)}; private until it goes public {_when(at)}." if at else
-               f"Uploaded to {_channel_text(ch)} as {video.get('status', {}).get('privacyStatus', meta['status']['privacyStatus'])}.")
+    if f.get("yt_format") == "video":  # a video made from a guide: a regular YouTube video only, never a Short
+        return _publish_youtube_regular(acct_id, tok, ch, path, meta, f, at, job)
+    job["status"] = "uploading the Short to YouTube"
+    video = _youtube_upload(tok, path, meta)
+    message = (f"Short uploaded to {_channel_text(ch)}; private until it goes public {_when(at)}." if at else
+               f"Short uploaded to {_channel_text(ch)} as {video.get('status', {}).get('privacyStatus', meta['status']['privacyStatus'])}.")
     out = {"url": f"https://youtube.com/shorts/{video['id']}", "video_id": video["id"], **({"scheduled_at": at} if at else {})}
     thumb = _thumb_bytes(f.get("thumb"))
     if f.get("thumb") and not thumb:
-        return {**out, "thumb_set": False, "message": message + " The thumbnail wasn't set: the image was empty or over 2 MB."}
-    if thumb:
+        out.update(thumb_set=False)
+        message += " The thumbnail wasn't set: the image was empty or over 2 MB."
+    elif thumb:
         ok, note = set_youtube_thumbnail(acct_id, video["id"], thumb, job)
-        return {**out, "thumb_set": ok, "message": message + " " + note}
+        out.update(thumb_set=ok)
+        message += " " + note
+    if f.get("yt_also_video", True):
+        extra, note = _publish_youtube_long(acct_id, path, meta, thumb, job)
+        out.update(extra)
+        message += " " + note
     return {**out, "message": message}
+
+
+def _youtube_upload(tok: str, path: Path, meta: dict) -> dict:
+    """One resumable upload to the channel the token acts for. Returns YouTube's video resource."""
+    _, h, _ = http("POST", "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+                   body=meta, headers={"Authorization": f"Bearer {tok}", "X-Upload-Content-Type": "video/mp4",
+                                       "X-Upload-Content-Length": str(path.stat().st_size)})
+    _, _, video = http("PUT", h["Location"], raw=path.read_bytes(), timeout=900,
+                       headers={"Authorization": f"Bearer {tok}", "Content-Type": "video/mp4"})
+    return video
+
+
+# ---------- YouTube: the same clip as a regular video ----------
+# YouTube makes every vertical or square upload of up to 3 minutes a Short; there is no API flag to say otherwise.
+# So the regular video is a 16:9 version: the clip centered over a blurred, widened copy of itself.
+LANDSCAPE = (1920, 1080)
+
+
+def _landscape_filter(w: int, h: int) -> str:
+    return (f"[0:v]split=2[a][b];[a]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=40:4[bg];"
+            f"[b]scale=-2:{h}[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[v]")
+
+
+def _video_size(path: Path) -> tuple[int, int] | None:
+    res = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                          "-of", "csv=p=0:s=x", str(path)], capture_output=True, text=True)
+    try:
+        w, h = res.stdout.strip().split("x")[:2]
+        return int(w), int(h)
+    except ValueError:
+        return None
+
+
+def _to_landscape(path: Path, out: Path) -> None:
+    w, h = LANDSCAPE
+    res = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(path), "-filter_complex", _landscape_filter(w, h),
+                          "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-r", "30",
+                          "-c:a", "copy", "-movflags", "+faststart", str(out)], capture_output=True, text=True)
+    if res.returncode != 0:
+        raise PublishError("couldn't make the 16:9 version: " + res.stderr.strip()[-300:])
+
+
+def _landscape_thumb(thumb: bytes, work: Path) -> bytes | None:
+    """The vertical thumbnail placed the same way on a 16:9 image (YouTube's video thumbnails are 16:9)."""
+    src, out = work / "thumb_in.jpg", work / "thumb_16x9.jpg"
+    src.write_bytes(thumb)
+    res = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-filter_complex", _landscape_filter(1280, 720),
+                          "-map", "[v]", "-frames:v", "1", "-q:v", "3", str(out)], capture_output=True, text=True)
+    data = out.read_bytes() if res.returncode == 0 and out.exists() else b""
+    return data if 0 < len(data) <= 2 * 1024 * 1024 else None
+
+
+def _strip_shorts(text: str) -> str:
+    return " ".join(w for w in text.split(" ") if w.lower().strip(".,!") not in ("#shorts", "#short")).strip()
+
+
+def _no_shorts_meta(meta: dict) -> dict:
+    snip = meta["snippet"]
+    return {"snippet": {**snip, "title": _strip_shorts(snip["title"]) or snip["title"],
+                        "description": "\n".join(_strip_shorts(l) for l in snip["description"].split("\n")),
+                        "tags": [t for t in snip["tags"] if t.lower() not in ("shorts", "short")]},
+            "status": dict(meta["status"])}
+
+
+def _publish_youtube_regular(acct_id: str, tok: str, ch: dict, path: Path, meta: dict, f: dict, at: int | None,
+                             job: dict) -> dict:
+    """Upload as a regular video only. A vertical or square clip of up to 3 minutes would become a Short,
+    so that one goes up as the 16:9 version (centered over a blurred copy of itself)."""
+    size = _video_size(path)
+    wide = bool(size and size[0] > size[1])
+    work = Path(tempfile.mkdtemp(prefix="clipstudio_ytvideo_"))
+    try:
+        src = path
+        if not wide and (_video_seconds(path) or 0) <= 180:
+            job["status"] = "making the 16:9 version for YouTube"
+            src = work / "video_16x9.mp4"
+            _to_landscape(path, src)
+        job["status"] = "uploading the video to YouTube"
+        video = _youtube_upload(tok, src, _no_shorts_meta(meta))
+        privacy = video.get("status", {}).get("privacyStatus", meta["status"]["privacyStatus"])
+        message = (f"Video uploaded to {_channel_text(ch)}; private until it goes public {_when(at)}." if at else
+                   f"Video uploaded to {_channel_text(ch)} as {privacy}.")
+        out = {"url": f"https://www.youtube.com/watch?v={video['id']}", "video_id": video["id"],
+               **({"scheduled_at": at} if at else {})}
+        thumb = _thumb_bytes(f.get("thumb"))
+        if thumb and src is not path:
+            thumb = _landscape_thumb(thumb, work)
+        if f.get("thumb") and not thumb:
+            out.update(thumb_set=False)
+            message += " The thumbnail wasn't set: the image was empty or over 2 MB."
+        elif thumb:
+            ok, note = set_youtube_thumbnail(acct_id, video["id"], thumb, job)
+            out.update(thumb_set=ok)
+            message += " " + note
+        return {**out, "message": message}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _publish_youtube_long(acct_id: str, path: Path, short_meta: dict, thumb: bytes | None, job: dict) -> tuple[dict, str]:
+    """Upload the clip again as a regular (16:9) video. Never fails the publish: the Short is already up."""
+    size = _video_size(path)
+    if size and size[0] > size[1]:
+        return {}, "The clip is already horizontal, so it went up as a regular video, not a Short."
+    work = Path(tempfile.mkdtemp(prefix="clipstudio_yt16x9_"))
+    try:
+        job["status"] = "making the 16:9 version for the regular YouTube video"
+        wide = work / "video_16x9.mp4"
+        _to_landscape(path, wide)
+        snip = short_meta["snippet"]
+        meta = {"snippet": {**snip, "title": _strip_shorts(snip["title"]) or snip["title"],
+                            "description": "\n".join(_strip_shorts(l) for l in snip["description"].split("\n")),
+                            "tags": [t for t in snip["tags"] if t.lower() not in ("shorts", "short")]},
+                "status": dict(short_meta["status"])}
+        job["status"] = "uploading the regular video to YouTube"
+        video = _youtube_upload(access_token(acct_id), wide, meta)
+        out = {"video_url": f"https://www.youtube.com/watch?v={video['id']}", "long_video_id": video["id"]}
+        note = "Also uploaded as a regular 16:9 video."
+        wide_thumb = _landscape_thumb(thumb, work) if thumb else None
+        if wide_thumb:
+            ok, _ = set_youtube_thumbnail(acct_id, video["id"], wide_thumb, job)
+            out["long_thumb_set"] = ok
+            if not ok:
+                note += " Its thumbnail wasn't set."
+        return out, note
+    except PublishError as e:
+        return {"video_error": str(e)}, f"The regular video wasn't uploaded: {e}"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 # Waits between thumbnail attempts. YouTube refuses thumbnails for a while after a channel has set many in a
@@ -733,9 +887,13 @@ def set_youtube_thumbnail(acct_id: str, video_id: str, thumb: bytes, job: dict) 
     for attempt in range(len(THUMB_RETRY_WAITS) + 1):
         job["status"] = "setting the YouTube thumbnail" + (f" (try {attempt + 1})" if attempt else "")
         try:
-            http("POST", f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={video_id}", raw=thumb,
+            # Google's /upload/ endpoints need uploadType; without it the request is refused with a 400.
+            http("POST", f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?uploadType=media&videoId={video_id}", raw=thumb,
                  timeout=120, headers={"Authorization": f"Bearer {access_token(acct_id)}", "Content-Type": "image/jpeg"})
-            return True, "Thumbnail set." + (f" (YouTube accepted it on try {attempt + 1}.)" if attempt else "")
+            # YouTube stores it (search, watch page, channel), but the Shorts feed and Studio's Shorts list
+            # show a frame from the video instead; there is no API to change that cover.
+            return True, ("Thumbnail set (shown in search and on the watch page; the Shorts feed and Studio's Shorts "
+                          "list show a frame of the video)." + (f" YouTube accepted it on try {attempt + 1}." if attempt else ""))
         except PublishError as e:
             err = str(e)
             retry = "uploadRateLimitExceeded" in err or "rateLimitExceeded" in err or any(
@@ -749,9 +907,10 @@ def set_youtube_thumbnail(acct_id: str, video_id: str, thumb: bytes, job: dict) 
                     continue
                 return False, ("The thumbnail wasn't set: YouTube is still limiting thumbnail uploads on this channel. "
                                "Use Retry thumbnail later.")
-            if "403" in err:
+            if "returned 403" in err and ("forbidden" in err.lower() or "verif" in err.lower() or "permission" in err.lower()):
                 # Custom thumbnails need a verified channel (phone check in YouTube Studio).
-                return False, "The thumbnail wasn't set: verify the channel by phone at youtube.com/verify to allow custom thumbnails."
+                return False, ("The thumbnail wasn't set: verify the channel by phone at youtube.com/verify to allow "
+                               f"custom thumbnails. (YouTube said: {err})")
             return False, f"The thumbnail wasn't set ({err})."
     return False, "The thumbnail wasn't set."
 
@@ -1063,6 +1222,23 @@ def _queue(acct: dict, path: Path, body: dict, at: int) -> dict:
             "message": f"Scheduled for {_when(at)}. ViralClip posts it then, so keep server.py running at that time."}
 
 
+PHOTO_POST = None  # set by photos.py: publishes a queued photo post (item) -> result dict
+
+
+def _queue_photos(acct: dict, photo_ids: list[str], body: dict, at: int) -> dict:
+    """Queue a photo post. The photos stay in the photo library (data/photos/) until it goes out."""
+    fields = {k: v for k, v in body.items() if k not in ("account", "photos", "schedule_at")}
+    item_id = _new_id()
+    with _sched_lock:
+        items = _sched_read()
+        items.append({"id": item_id, "account": acct["id"], "platform": acct["platform"], "at": at, "kind": "photos",
+                      "file": None, "photos": photo_ids, "fields": fields, "status": "waiting"})
+        _sched_write(items)
+    return {"url": None, "scheduled_at": at, "scheduled_id": item_id,
+            "message": f"Scheduled for {_when(at)}. ViralClip posts it then, so keep server.py running at that time "
+                       "and keep its photos in the library."}
+
+
 def _run_due():
     with _sched_lock:
         items = _sched_read()
@@ -1072,16 +1248,22 @@ def _run_due():
         if due:
             _sched_write(items)
     for item in due:
-        path = SCHEDULED_DIR / item["file"]
+        path = SCHEDULED_DIR / item["file"] if item.get("file") else None
         job = {"status": "starting"}
         try:
-            if not path.exists():
-                raise PublishError("the saved clip is missing")
-            res = PUBLISHERS[item["platform"]](item["account"], path, item["fields"], job)
+            if item.get("kind") == "photos":
+                if PHOTO_POST is None:
+                    raise PublishError("photo posting isn't loaded")
+                res = PHOTO_POST(item, job)
+            else:
+                if not path or not path.exists():
+                    raise PublishError("the saved clip is missing")
+                res = PUBLISHERS[item["platform"]](item["account"], path, item["fields"], job)
             update = {"status": "done", "url": res.get("url"), "message": res.get("message"), "posted": time.time()}
         except Exception as e:
             update = {"status": "error", "error": str(e), "posted": time.time()}
-        path.unlink(missing_ok=True)
+        if path:
+            path.unlink(missing_ok=True)
         with _sched_lock:
             items = _sched_read()
             for i in items:
@@ -1123,7 +1305,8 @@ def cancel_scheduled(item_id: str):
             raise HTTPException(404, "unknown scheduled post")
         if item["status"] != "waiting":
             raise HTTPException(400, "That post isn't waiting any more.")
-        (SCHEDULED_DIR / item["file"]).unlink(missing_ok=True)
+        if item.get("file"):
+            (SCHEDULED_DIR / item["file"]).unlink(missing_ok=True)
         items.remove(item)
         _sched_write(items)
     return {"ok": True}

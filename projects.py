@@ -56,7 +56,7 @@ def list_projects():
             "id": p["id"], "name": p.get("name", "Video"), "created": p.get("created"), "updated": p.get("updated"),
             "duration": p.get("duration", 0), "clips": len(clips), "aspect": p.get("aspect"),
             "thumb": next((c.get("thumb") for c in clips if c.get("thumb")), None),
-            "available": fetch.media_exists(p.get("media", "")),
+            "available": fetch.media_exists(p.get("media", "")), "media": p.get("media", ""),
         })
     out.sort(key=lambda p: p.get("updated") or 0, reverse=True)
     return {"projects": out}

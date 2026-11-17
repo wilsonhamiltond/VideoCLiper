@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +27,9 @@ import narrate
 import projects
 import publish
 import stock
+import guide
+import notify
+import photos
 
 ROOT = Path(__file__).parent
 # large-v3-turbo catches far more dialog (short lines, speech over music/gunfire) but is slow on CPU,
@@ -47,6 +51,9 @@ app.include_router(clone.router)
 app.include_router(projects.router)
 app.include_router(stock.router)
 app.include_router(music.router)
+app.include_router(guide.router)
+app.include_router(notify.router)
+app.include_router(photos.router)
 jobs: dict[str, dict] = {}
 
 
@@ -105,7 +112,7 @@ def load_model(force_cpu: bool = False):
 
 
 HOP = 0.25  # seconds per loudness/motion frame; must match HOP in index.html
-API_VERSION = 10  # bump when the API changes; index.html refuses to talk to a mismatched server
+API_VERSION = 11  # bump when the API changes; index.html refuses to talk to a mismatched server
 
 
 def has_stream(src: Path, kind: str) -> bool:
@@ -530,6 +537,8 @@ The images are frames from the clip, in order.{transcript}
 """ + ENGAGEMENT_RULES + """
 Write:
 - "hook": a scroll-stopping line for the top of the video, at most 8 words, specific to what is shown. No hashtags.
+  Wrap the one or two most important words of the hook in *asterisks* so they get highlighted, e.g. "Nobody talks about *this*".
+  Highlight a word that carries the meaning (a noun, verb or number), never a filler word.
 - "caption": one punchy line for the bottom of the video, at most 14 words, adding context or a reaction, or teasing the payoff. May end with one emoji.
 Write in {language}. Do not describe the frames literally ("a man in a kart"); react to them like a creator would.
 Reply with JSON only: {{"hook": "...", "caption": "..."}}"""
@@ -559,7 +568,40 @@ def ai_caption(body: dict):
     except Exception as e:
         raise HTTPException(502, f"{model} failed: {e}")
     clean = lambda s: str(s or "").strip().strip('"').strip()
-    return {"hook": clean(out.get("hook")), "caption": clean(out.get("caption")), "model": model}
+    return {"hook": clean(out.get("hook")), "caption": clean(out.get("caption")), "model": model,
+            "faces": detect_faces(frames)}
+
+
+def detect_faces(frames: list[str]) -> list[list[list[float]]]:
+    """Faces in each frame (base64 JPEGs) as [x, y, w, h] shares of the frame, biggest first.
+    The page uses them to keep the hook and captions off the face and to pick the zoom."""
+    if not FACE_MODEL.exists():
+        return []
+    try:
+        import base64
+        import cv2
+        import numpy as np
+    except ImportError:
+        return []
+    out, detector = [], None
+    for b64 in frames:
+        boxes = []
+        try:
+            img = cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
+            if img is not None:
+                h, w = img.shape[:2]
+                if detector is None:
+                    detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (w, h), 0.7)
+                detector.setInputSize((w, h))
+                _, faces = detector.detect(img)
+                for f in faces if faces is not None else []:
+                    fx, fy, fw, fh = (float(v) for v in f[:4])
+                    if fw >= 8:
+                        boxes.append([round(fx / w, 4), round(fy / h, 4), round(fw / w, 4), round(fh / h, 4)])
+        except Exception as e:  # a bad frame or no OpenCV face support: lay out without faces
+            print(f"face detection failed: {e}")
+        out.append(sorted(boxes, key=lambda b: -b[2] * b[3]))
+    return out
 
 
 NARRATION_STYLES = {
@@ -809,6 +851,11 @@ def ai_post_text(body: dict):
         out = json.loads(res["message"]["content"])
     except Exception as e:
         raise HTTPException(502, f"{model} failed: {e}")
+    return clean_post_text(out, model)
+
+
+def clean_post_text(out: dict, model: str) -> dict:
+    """The model's per-platform text, tidied: #Shorts only in the YouTube title, plain tags, no repeated hashtags."""
     yt = out.get("youtube", {})
     title = str(yt.get("title", "")).strip().strip('"')
     if "#shorts" not in title.lower() and len(title) <= 92:
@@ -829,6 +876,106 @@ def ai_post_text(body: dict):
                                                   or out.get("instagram", {}).get("caption", "")), ("#shorts",))[:2200]},
         "model": model,
     }
+
+
+PHOTO_POST_PROMPT = """You are a social media manager writing the text for one photo post.
+The images are the {n} photo(s) of the post, in order. On Facebook and Instagram they are posted as photos
+(a carousel when there are several); on TikTok and YouTube Shorts they are shown as a short slideshow video.{context}
+Write text that stops the scroll and gets comments, saves and shares, and is honest about what the photos show.
+Be specific to these photos, not generic.
+- Hook first: the first line must grab attention (a bold statement, a surprising fact, a relatable feeling or a question).
+- Invite engagement: end with a question, "save this for later", "tag someone who…" or a similar call to action that fits.
+- youtube.title: max 70 characters, curiosity or a clear payoff, one natural keyword, ends with " #Shorts". No ALL CAPS.
+- youtube.description: 2 short lines, then a blank line, then 3-5 relevant hashtags.
+- youtube.tags: 6-10 short search keywords (no # sign).
+- tiktok.caption: max 150 characters, conversational, ends with 3-5 hashtags mixing broad and niche.
+- instagram.caption: a hook line, 1-3 short lines, a call to action, then a blank line, then 5-8 hashtags.
+- facebook.caption: 1-3 conversational lines that invite comments or shares, then 2-4 hashtags.
+Never repeat a hashtag. Use #Shorts only in the YouTube title. Don't name people, places or brands you can't be sure of.
+Write in {language}. Reply with JSON only."""
+
+
+@app.post("/api/photo-post-text")
+def ai_photo_post_text(body: dict):
+    """Captions and hashtags for each platform, from the photos of a photo post."""
+    model = vision_model()
+    if not model:
+        raise HTTPException(503, "No local vision model found. Install Ollama and run: ollama pull qwen2.5vl:7b")
+    ids = [str(x) for x in body.get("photos") or []][:4]  # the first photos are enough to know what it's about
+    if not ids:
+        raise HTTPException(400, "Add photos to the post first.")
+    try:
+        images = [photos.thumb_b64(pid) for pid in ids]
+    except publish.PublishError as e:
+        raise HTTPException(400, str(e))
+    topic = (body.get("topic") or "").strip()[:300]
+    context = f'\nThe creator says the post is about: "{topic}"' if topic else ""
+    n = len(body.get("photos") or [])
+    prompt = PHOTO_POST_PROMPT.format(n=n, context=context, language=body.get("language") or "English")
+    return clean_post_text(ollama_json(model, prompt, POST_SCHEMA, images, 0.75), model)
+
+
+VIRAL_IMAGE_PROMPT = """You design ONE scroll-stopping image for a social media photo post (Instagram, Facebook, TikTok).
+The images are the {n} photo(s) it is made from, in order. The layout is "{layout}": {how}{context}
+Write the text that goes ON the image, in {language}:
+- "text": the hook, {words}. It must create curiosity, emotion or a clear payoff, be specific to these photos and honest
+  about them. Think "NOBODY TALKS ABOUT THIS", "I WISH I KNEW THIS SOONER", "WHICH ONE WOULD YOU PICK?". No hashtags, no emojis.
+- "accent": the ONE word of "text" to highlight in color (the most emotional or surprising word).
+- "labels": {labels}
+- "position": where the hook goes so it does not cover the main subject: "top" or "bottom".
+Reply with JSON only."""
+
+VIRAL_LAYOUTS = {
+    "hook": ("one photo, full bleed, with big bold text over it.", "2 to 6 words", "an empty list."),
+    "split": ("two photos side by side, a comparison: before / after, expectation / reality, this vs that.",
+              "3 to 7 words, framing the comparison",
+              'exactly 2 very short labels (1-2 words), one per photo, e.g. ["Before", "After"] or ["Expectation", "Reality"].'),
+    "collage": ("2 to 4 photos in a grid with the hook on a band across the middle.", "3 to 7 words",
+                "one 1-2 word label per photo, or an empty list if labels add nothing."),
+    "ranking": ("a numbered top list, one photo per rank, the hook as the header.", 'a list title of 3 to 7 words, e.g. "TOP 5 CARS UNDER $20K"',
+                "one short name (1-3 words) per photo, in rank order."),
+    "meme": ("a white caption bar on top (like a tweet), the photo(s) below.",
+             "one relatable or funny sentence of 6 to 16 words, in normal sentence case (not all caps)", "an empty list."),
+}
+
+
+@app.post("/api/photos/design-text")
+def ai_design_text(body: dict):
+    """Hook text, highlight word and labels for a viral image made from the post's photos."""
+    model = vision_model()
+    if not model:
+        raise HTTPException(503, "No local vision model found. Install Ollama and run: ollama pull qwen2.5vl:7b")
+    ids = [str(x) for x in body.get("photos") or []][:5]
+    if not ids:
+        raise HTTPException(400, "Add photos to the post first.")
+    layout = body.get("layout") if body.get("layout") in VIRAL_LAYOUTS else "hook"
+    if layout == "hook":
+        ids = ids[:1]
+    elif layout == "split":
+        ids = ids[:2]
+    try:
+        images = [photos.thumb_b64(pid, 512) for pid in ids]
+    except publish.PublishError as e:
+        raise HTTPException(400, str(e))
+    how, words, labels = VIRAL_LAYOUTS[layout]
+    topic = (body.get("topic") or "").strip()[:300]
+    context = f'\nThe creator says the post is about: "{topic}"' if topic else ""
+    schema = {"type": "object", "required": ["text", "accent", "labels", "position"], "properties": {
+        "text": {"type": "string"}, "accent": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}},
+        "position": {"type": "string", "enum": ["top", "bottom"]}}}
+    prompt = VIRAL_IMAGE_PROMPT.format(n=len(ids), layout=layout, how=how, words=words, labels=labels, context=context,
+                                       language=body.get("language") or "English")
+    try:
+        out = ollama_json(model, prompt, schema, images, 0.8)
+    except Exception as e:
+        raise HTTPException(502, f"{model} failed: {e}")
+    text = re.sub(r"#\w+", "", str(out.get("text") or "")).strip().strip('"').strip()
+    accent = str(out.get("accent") or "").strip().strip('"')
+    if accent.lower() not in text.lower():
+        accent = max(text.split(), key=len, default="")
+    labels_out = [re.sub(r"#\w+", "", str(x)).strip()[:30] for x in (out.get("labels") or []) if str(x).strip()]
+    return {"text": text, "accent": accent, "labels": labels_out[:len(ids)] if layout != "hook" else [],
+            "position": out.get("position") if out.get("position") in ("top", "bottom") else "top", "model": model}
 
 
 THUMB_PROMPT = """You design the thumbnail (cover image) for a short vertical video (TikTok / Reels / Shorts).
@@ -941,6 +1088,112 @@ def job_status(job_id: str):
     if job["status"] in ("done", "error"):
         jobs.pop(job_id)  # results are handed out once
     return {k: v for k, v in job.items() if k != "meta"}
+
+
+# ---------- import a link and find its moments, in the background ----------
+# One job downloads the video, then transcribes it and measures loudness and motion. The bell (notify.py)
+# follows it, so the page can be closed meanwhile. The page scores the moments from the saved analysis
+# when the result is opened (that part takes a second).
+ANALYSIS = ROOT / "data" / "analysis"
+auto_jobs: dict[str, dict] = {}
+
+
+def analysis_file(media: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{32}", media or ""):
+        raise HTTPException(404, "unknown video")
+    return ANALYSIS / f"{media}.json"
+
+
+def run_auto(job_id: str, fetch_id: str, opts: dict):
+    job, nid = auto_jobs[job_id], auto_jobs[job_id]["nid"]
+
+    def report(progress: float, phase: str, step: str = ""):
+        notify.live[nid] = {"progress": round(progress, 3), "phase": phase, "step": step}
+
+    try:
+        # 1. Download (0-50 %). start_fetch already started the yt-dlp thread.
+        while True:
+            f = fetch.fetch_jobs.get(fetch_id) or {"status": "error", "error": "The download was lost."}
+            if f["status"] == "done":
+                break
+            if f["status"] == "error":
+                raise RuntimeError("cancelled" if f.get("cancelled") else f.get("error") or "Download failed.")
+            if f.get("title") and job.get("title") != f["title"]:
+                job["title"] = f["title"]
+                notify.update(nid, title=f["title"])
+            clock = f.get("clock")
+            p = min(0.99, (time.time() - clock[0]) / clock[1]) if clock else f.get("progress", 0.0)
+            report(0.5 * p, "recording" if f["status"] == "recording" else "download", f"{round(p * 100)}%")
+            time.sleep(1)
+        fetch.fetch_jobs.pop(fetch_id, None)
+        r = job["result"] = f["result"]
+        if job.get("cancel"):
+            raise RuntimeError("cancelled")
+
+        # 2. Speech, loudness and motion (50-100 %), on the same single worker as uploads.
+        job["analyzing"] = True
+        tid = uuid.uuid4().hex
+        jobs[tid] = {"status": "queued", "progress": 0.0}
+        workdir = Path(tempfile.mkdtemp(prefix="clipstudio_"))
+        future = executor.submit(run_transcription, tid, workdir, fetch.media_path(r["media"]), None)
+        while not future.done():
+            t = jobs.get(tid, {})
+            report(0.5 + 0.49 * t.get("progress", 0.0), "analyze", str(t.get("status", "")))
+            if job.get("cancel"):
+                raise RuntimeError("cancelled")
+            time.sleep(1)
+        t = jobs.pop(tid, {})
+        if t.get("status") != "done":
+            raise RuntimeError("Analysis failed: " + str(t.get("error") or "unknown error"))
+        ANALYSIS.mkdir(parents=True, exist_ok=True)
+        analysis_file(r["media"]).write_text(json.dumps(t["result"]), "utf-8")
+        result = {**r, **opts}
+        words = sum(len(s.get("words") or []) for s in t["result"].get("segments") or [])
+        res = f"{min(r['width'], r['height'])}p · " if r.get("height") else ""
+        notify.update(nid, status="done", read=False, progress=1.0, result=result,
+                      body=f"{res}{words} words transcribed. Open it to see the {opts['count']} best moments.")
+    except Exception as e:
+        cancelled = str(e) == "cancelled"
+        if cancelled and job.get("result") and not job.get("analyzing"):
+            fetch.delete_media(job["result"]["media"])  # while analyzing, ffmpeg still holds it open
+        notify.update(nid, status="cancelled" if cancelled else "error", read=cancelled,
+                      body="Cancelled." if cancelled else str(e))
+    finally:
+        auto_jobs.pop(job_id, None)
+
+
+@app.post("/api/import-moments")
+def start_import_moments(body: dict):
+    opts = {"len": int(body.get("len") or 60), "count": int(body.get("count") or 5),
+            "aspect": "9:16"}  # clips are always Shorts (1080x1920)
+    fetch_id = fetch.start_fetch(body)["job"]  # validates the link and the times, then starts downloading
+    job_id = uuid.uuid4().hex
+    nid = notify.add("moments", str(body.get("url", "")).strip()[:120], "Starting…", status="running",
+                     job=job_id, progress=0.0)
+    auto_jobs[job_id] = {"nid": nid, "fetch": fetch_id}
+    threading.Thread(target=run_auto, args=(job_id, fetch_id, opts), daemon=True).start()
+    return {"job": job_id, "notification": nid}
+
+
+@app.post("/api/import-moments/{job_id}/stop")
+def stop_import_moments(job_id: str):
+    job = auto_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Nothing to stop.")
+    job["cancel"] = True
+    try:
+        fetch.stop_fetch(job["fetch"])
+    except HTTPException:
+        pass
+    return {"ok": True}
+
+
+@app.get("/api/analysis/{media}")
+def get_analysis(media: str):
+    f = analysis_file(media)
+    if not f.exists():
+        raise HTTPException(404, "The analysis of this video is gone. Import it again.")
+    return FileResponse(f, media_type="application/json")
 
 
 @app.get("/")

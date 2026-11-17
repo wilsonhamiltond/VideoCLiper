@@ -409,6 +409,7 @@ def delete_media(media: str):
     path = find_media(media)
     if path:
         path.unlink(missing_ok=True)
+        path.with_suffix(".srt").unlink(missing_ok=True)  # subtitles of a video made from a guide
 
 
 MEDIA_TYPES = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/mp4", ".webm": "video/webm",

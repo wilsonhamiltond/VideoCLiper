@@ -6,3 +6,4 @@ opencv-python-headless
 yt-dlp[default]
 edge-tts
 # GPU transcription (optional, NVIDIA): nvidia-cublas-cu12, nvidia-cudnn-cu12==9.*
+Pillow
