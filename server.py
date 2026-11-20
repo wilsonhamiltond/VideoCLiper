@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +31,9 @@ import stock
 import guide
 import notify
 import photos
+import llm
+import campaigns
+import channels
 
 ROOT = Path(__file__).parent
 # large-v3-turbo catches far more dialog (short lines, speech over music/gunfire) but is slow on CPU,
@@ -54,6 +58,9 @@ app.include_router(music.router)
 app.include_router(guide.router)
 app.include_router(notify.router)
 app.include_router(photos.router)
+app.include_router(llm.router)
+app.include_router(campaigns.router)
+app.include_router(channels.router)
 jobs: dict[str, dict] = {}
 
 
@@ -519,6 +526,18 @@ def vision_model() -> str | None:
     return vision[0] if vision else None
 
 
+LOCAL_HINT = "No local vision model found. Install Ollama and run: ollama pull qwen2.5vl:7b"
+
+
+def ai_model() -> dict:
+    """The AI chosen under Settings › AI model (local Ollama by default), or 503 when it can't run."""
+    cfg = llm.load()
+    spec = llm.current(vision_model() if cfg["provider"] == "local" else None)
+    if not spec:
+        raise HTTPException(503, llm.missing_message(LOCAL_HINT))
+    return spec
+
+
 # Ollama may size the context to the model's maximum (128k for qwen2.5vl), which doubles its memory and
 # spills it out of a 12 GB GPU onto the CPU (minutes per call). Our prompts need far less. num_predict stops
 # runaway JSON generation.
@@ -546,30 +565,66 @@ Reply with JSON only: {{"hook": "...", "caption": "..."}}"""
 
 @app.post("/api/caption")
 def ai_caption(body: dict):
-    model = vision_model()
-    if not model:
-        raise HTTPException(503, "No local vision model found. Install Ollama and run: ollama pull qwen2.5vl:7b")
+    model = ai_model()
     transcript = (body.get("transcript") or "").strip()
     prompt = CAPTION_PROMPT.format(
         transcript=f'\nWhat is said in the clip: "{transcript[:1500]}"' if transcript else "\nThe clip has no speech.",
         language=body.get("language") or "English",
     )
+    camp = campaigns.from_body(body)
+    if camp:
+        prompt = prompt.replace("\nWrite:\n", campaigns.prompt_block(camp) + "\nOn-screen text has no hashtags.\nWrite:\n", 1)
     frames = [f.split(",", 1)[-1] for f in body.get("frames", [])][:4]  # strip data: URL prefixes
-    try:
-        res = ollama("/api/chat", {
-            "model": model,
-            "stream": False,
-            "format": {"type": "object", "properties": {"hook": {"type": "string"}, "caption": {"type": "string"}}, "required": ["hook", "caption"]},
-            "options": {"temperature": 0.8, **OLLAMA_OPTIONS},
-            "keep_alive": "30m",  # first load into VRAM can take minutes; keep it warm between clicks
-            "messages": [{"role": "user", "content": prompt, "images": frames}],
-        }, timeout=600)
-        out = json.loads(res["message"]["content"])
-    except Exception as e:
-        raise HTTPException(502, f"{model} failed: {e}")
+    schema = {"type": "object", "properties": {"hook": {"type": "string"}, "caption": {"type": "string"}}, "required": ["hook", "caption"]}
+    out = ollama_json(model, prompt, schema, frames, 0.8)
     clean = lambda s: str(s or "").strip().strip('"').strip()
-    return {"hook": clean(out.get("hook")), "caption": clean(out.get("caption")), "model": model,
+    return {"hook": clean(out.get("hook")), "caption": clean(out.get("caption")), "model": model["label"],
             "faces": detect_faces(frames)}
+
+
+VIRALITY_PROMPT = """You judge which moments of a longer video would go viral as standalone short clips (TikTok / Reels / Shorts).
+Below is what is said in each candidate clip. A viewer sees only that clip, with no context from the rest of the video.
+Rate every clip from 0 to 10 on:
+- "hook": do the first words make people stop scrolling (bold claim, question, surprise, conflict)? A greeting or slow build-up is 0-3.
+- "story": is it self-contained and easy to follow without the rest of the video, with no filler?
+- "payoff": does it end on a punchline, reveal, strong opinion or emotional peak rather than trailing off mid-thought?
+- "overall": how likely it is to be watched to the end and shared. Use the full range; most clips are 3-7.
+And "why": at most 8 words in {language} on what makes it work or not.
+Clips:
+{clips}
+Reply with JSON only: {{"ratings": [{{"hook": 0, "story": 0, "payoff": 0, "overall": 0, "why": "..."}}, ...]}} with exactly {n} items, in order."""
+
+
+@app.post("/api/virality")
+def ai_virality(body: dict):
+    """AI rating of candidate clips from their transcripts (text only, one call for all of them)."""
+    clips = [c for c in body.get("clips") or [] if isinstance(c, dict)][:16]  # keeps the reply within the local model's 800-token cap
+    if not clips:
+        raise HTTPException(400, "No clips to rate")
+    model = ai_model()
+    n = len(clips)
+    listing = "\n".join(f'{i + 1}. ({int(c.get("seconds") or 0)} s) "{str(c.get("text") or "")[:1200]}"' for i, c in enumerate(clips))
+    score = {"type": "integer", "minimum": 0, "maximum": 10}
+    item = {"type": "object", "required": ["hook", "story", "payoff", "overall", "why"],
+            "properties": {"hook": score, "story": score, "payoff": score, "overall": score, "why": {"type": "string"}}}
+    schema = {"type": "object", "required": ["ratings"],
+              "properties": {"ratings": {"type": "array", "minItems": n, "maxItems": n, "items": item}}}
+    prompt = VIRALITY_PROMPT.format(language=body.get("language") or "English", clips=listing, n=n)
+    out = ollama_json(model, prompt, schema, None, 0.2)
+
+    def num(v):
+        try:
+            return max(0, min(10, round(float(v))))
+        except (TypeError, ValueError):
+            return 5
+
+    ratings = []
+    for r in (out.get("ratings") or [])[:n]:
+        r = r if isinstance(r, dict) else {}
+        ratings.append({k: num(r.get(k)) for k in ("hook", "story", "payoff", "overall")}
+                       | {"why": str(r.get("why") or "").strip()[:80]})
+    ratings += [None] * (n - len(ratings))  # a short reply leaves the rest unrated
+    return {"ratings": ratings, "model": model["label"]}
 
 
 def detect_faces(frames: list[str]) -> list[list[list[float]]]:
@@ -677,7 +732,12 @@ def without_echo(text: str, said: list[str]) -> str:
     return " ".join(p for p in parts if key(p) not in heard and not any(len(h) > 8 and h in key(p) for h in heard)).strip()
 
 
-def ollama_json(model: str, prompt: str, schema: dict, images: list | None = None, temperature: float = 0.7) -> dict:
+def ollama_json(model, prompt: str, schema: dict, images: list | None = None, temperature: float = 0.7) -> dict:
+    """One JSON reply from the chosen AI. `model` is a spec from ai_model() or a plain Ollama model name."""
+    if isinstance(model, dict):
+        if model["provider"] != "local":
+            return llm.chat_json(model, prompt, schema, images, temperature)
+        model = model["model"]
     msg = {"role": "user", "content": prompt, **({"images": images} if images else {})}
     request = {"model": model, "stream": False, "keep_alive": "30m", "format": schema,
                "options": {"temperature": temperature, **OLLAMA_OPTIONS}, "messages": [msg]}
@@ -705,9 +765,7 @@ def ai_narration_script(body: dict):
     then lines are written from that timeline, each starting at the moment it talks about.
     Without, one block of text read from the start of the clip.
     """
-    model = vision_model()
-    if not model:
-        raise HTTPException(503, "No local vision model found. Install Ollama and run: ollama pull qwen2.5vl:7b")
+    model = ai_model()
     seconds = max(3.0, min(180.0, float(body.get("seconds") or 30)))
     # ~2.5 spoken words a second at normal speed, scaled by the chosen speed; a little slack for pauses.
     wps = 2.5 * (1 + max(-50, min(100, int(body.get("rate") or 0))) / 100)
@@ -753,7 +811,7 @@ def ai_narration_script(body: dict):
             # The model sometimes loops the same line through every part; say it once.
             if text and re.sub(r"\W+", " ", text.lower()).strip() not in {re.sub(r"\W+", " ", l["text"].lower()).strip() for l in lines}:
                 lines.append({"t": t, "text": text})
-        return {"lines": lines, "words": sum(caps), "model": model, "timeline": timeline}
+        return {"lines": lines, "words": sum(caps), "model": model["label"], "timeline": timeline}
 
     # `fill`: the voice should talk for the whole clip (stock shorts), so aim for the full length, not 90%.
     fill = bool(body.get("fill"))
@@ -778,21 +836,51 @@ def ai_narration_script(body: dict):
     sentences = re.split(r"(?<=[.!?…])\s+", script)
     while len(sentences) > 1 and len(" ".join(sentences).split()) > words * 1.1:
         sentences.pop()
-    return {"script": " ".join(sentences), "words": words, "model": model}
+    return {"script": " ".join(sentences), "words": words, "model": model["label"]}
 
 
-POST_PROMPT = """You are a social media manager writing upload text for one short vertical video.
+POST_PROMPT = """You run the social media channel that posts this clip. You write its upload text the way a real person
+behind a channel writes: casual, short, a little opinionated, like texting a friend "you have to see this".
 The images are frames from the clip, in order.{context}
-Write text that makes people stop scrolling and is honest about what the video shows. Be specific to these frames, not generic.
+
+VOICE (most important):
+- You are NOT the person in the video. The person talking in the clip is your guest/subject. Talk ABOUT them in third
+  person (he/she, or their name if the source title or speech gives it), never as if you were them. When you don't know
+  their name, use a natural word in {language} (for Spanish: "él", "ella", "este hombre", "esta señora"), never the English word "guest".
+  Wrong: "I used to gamble every day" (that's the guest speaking). Right: "He gambled every day until he lost everything".
+- The guest's own words may appear only inside quotes, as a quote: e.g. «Ese día entendí que tenía que cambiar».
+- Sound human: plain everyday words, short sentences, a real reaction ("this hit me", "no way", "respect"). It's fine
+  to start lowercase or leave a thought unfinished with "...".
+- Never sound like an ad or an AI: no "Don't miss", "Discover", "In this video", "This video will...", "Get ready",
+  "incredible/amazing/exciting" filler, no exclamation marks on every sentence, no stacking emoji. 0-1 emoji per text.
+- Native, natural {language}, the way people from that audience really write; never a word-for-word translation.
+
+Fill the fields in this order:
+1. "person": who is talking/shown, in a few words of {language} (their name only if the source title or the speech says it; else a plain description).
+2. "emotion": the ONE strongest feeling this clip gives a viewer (shock, laughter, outrage, heartwarming, inspiration,
+   nostalgia, suspense, sadness, pride, disbelief, curiosity...).
+3. "moment": one sentence, the exact peak moment or line that triggers that feeling (quote the speech if a line says it best).
+4. "angle": one sentence, why a stranger would comment or send it to a friend.
+5. Then the text for every platform, built on that feeling and that moment.
+
+What makes it work:
+- Lead with the feeling or the stakes, not a dry description. Concrete details from the clip (a number, an object, a line said)
+  beat vague words.
+- Tease the payoff, don't give it away: the viewer must watch to get it. Never promise what the clip doesn't show.
+- End with a question people really want to answer (take a side, share their own story), asked the way a person would ask it.
 """ + ENGAGEMENT_RULES + """
-- youtube.title: max 70 characters, curiosity or a clear payoff, one natural keyword, ends with " #Shorts". No ALL CAPS.
-- youtube.description: 2 short lines about the moment, then a blank line, then 3-5 relevant hashtags.
-- youtube.tags: 6-10 short search keywords (no # sign).
-- tiktok.caption: max 150 characters, conversational, ends with 3-5 hashtags mixing broad and niche.
-- instagram.caption: 1-2 lines plus a question or call to action, then a blank line, then 5-8 hashtags.
-- facebook.caption: 1-3 conversational lines that invite comments or shares, then 2-4 hashtags.
+
+Fields:
+- youtube.title: max 70 characters, third person or a quote, carries the feeling and an open loop, one natural search keyword,
+  ends with " #Shorts". No ALL CAPS sentences.
+- youtube.description: 2-3 short human lines: a reaction or a bit of context about the person and the moment (don't repeat the title),
+  then a simple question. Then a blank line, then 3-5 relevant hashtags.
+- youtube.tags: 6-10 short search keywords people would really type (no # sign): the person's name if known, the topic, then format words.
+- tiktok.caption: max 150 characters, a quick casual reaction about the moment, ends with 3-5 hashtags mixing broad and niche.
+- instagram.caption: a strong first line (it shows before "more"), 1-2 lines of context, a question, then a blank line, then 5-8 hashtags.
+- facebook.caption: 1-3 warm, conversational lines, like sharing it with family and friends, inviting comments, then 2-4 hashtags.
 Never repeat a hashtag. Use #Shorts only in the YouTube title. Don't guess names (games, people, places) that aren't in the source title, the speech or clearly on screen.
-Write in {language}. Reply with JSON only."""
+Write everything in {language}. Reply with JSON only."""
 
 
 def tidy_hashtags(text: str, drop: tuple[str, ...] = ()) -> str:
@@ -813,6 +901,8 @@ def tidy_hashtags(text: str, drop: tuple[str, ...] = ()) -> str:
 POST_SCHEMA = {
     "type": "object",
     "properties": {
+        # Filled first, so the model settles on the feeling and the peak moment before it writes any text.
+        "person": {"type": "string"}, "emotion": {"type": "string"}, "moment": {"type": "string"}, "angle": {"type": "string"},
         "youtube": {"type": "object", "properties": {
             "title": {"type": "string"}, "description": {"type": "string"},
             "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["title", "description", "tags"]},
@@ -820,16 +910,26 @@ POST_SCHEMA = {
         "instagram": {"type": "object", "properties": {"caption": {"type": "string"}}, "required": ["caption"]},
         "facebook": {"type": "object", "properties": {"caption": {"type": "string"}}, "required": ["caption"]},
     },
-    "required": ["youtube", "tiktok", "instagram", "facebook"],
+    "required": ["person", "emotion", "moment", "angle", "youtube", "tiktok", "instagram", "facebook"],
 }
+
+
+# Joined into the prompt context (no braces: it goes through .format()) when the clip has thumbnail text.
+THUMB_TEXT_RULES = """
+Build every text on that thumbnail line: it is the hook viewers see first, so the title and captions must tell the
+same story and keep its key word (or its meaning), as if the same person wrote both.
+- The YouTube title continues or completes the thumbnail's idea with more context (who, what, the stakes), in third
+  person; don't just copy the thumbnail word for word, and don't contradict it.
+- Each description and caption opens with that same idea, then adds context and a question.
+- If the thumbnail line is in first person (the guest's words), never rewrite its pronouns: either quote it exactly,
+  in «» with normal capitalization (e.g. «Ronqué y me atracaron»), or retell it in third person (e.g. "Se quedó dormido y lo atracaron").
+- Use only facts from the speech: don't change or add details (a gun pointed is not a shot fired)."""
 
 
 @app.post("/api/post-text")
 def ai_post_text(body: dict):
     """Titles, descriptions, captions and hashtags for each platform, from the clip's frames and transcript."""
-    model = vision_model()
-    if not model:
-        raise HTTPException(503, "No local vision model found. Install Ollama and run: ollama pull qwen2.5vl:7b")
+    model = ai_model()
     context = ""
     if (body.get("source") or "").strip():
         # The original file name often names the game/show/topic, which the model would otherwise guess.
@@ -838,20 +938,384 @@ def ai_post_text(body: dict):
         context += f'\nWhat is said in the clip: "{body["transcript"].strip()[:1500]}"'
     else:
         context += "\nThe clip has no speech."
-    if body.get("hook") or body.get("caption"):
-        context += f'\nOn-screen text: "{body.get("hook", "")}" / "{body.get("caption", "")}"'
+    hook = re.sub(r"\s+", " ", str(body.get("hook") or "").replace("*", "")).strip()[:150]
+    if hook:
+        # The on-screen hook is the clip's strongest angle: the title and captions grow out of it.
+        context += (f'\nThe hook written on the video says: "{hook}". It is the most viral angle of this clip: build the'
+                    " title and the first line of every caption on that same idea and keep its key word (in normal"
+                    " capitalization, not ALL CAPS), adding the stakes and an open loop so people want to watch.")
+    if (body.get("caption") or "").strip():
+        context += f'\nCaption on the video: "{str(body["caption"]).strip()[:300]}"'
+    viral = viral_words(body)
+    context += viral_block(viral)
+    # The strongest lines said in the clip (from its captions): the title and description are built on them.
+    named_in = " ".join(str(body.get(k) or "") for k in ("source", "hook", "caption", "thumb_text"))
+    lines, names = viral_lines(model, body.get("transcript") or "", named_in)
+    if names:
+        context += names_block(names)
+    if lines:
+        context += ("\n\nVIRAL MOMENTS: the exact lines said in the clip that make people stop scrolling, strongest first:\n"
+                    + "\n".join(f"{i + 1}. «{t}»" for i, t in enumerate(lines))
+                    + "\nBuild the YouTube title on line 1 (quote it shortened to its most emotional words, or retell it in third"
+                      " person with its key word). The YouTube description opens with the strongest line quoted in «», then"
+                      " one line of context and a question. Each caption's first line uses one of these lines.")
+    thumb_text = re.sub(r"\s+", " ", str(body.get("thumb_text") or "")).strip()[:80]
+    if thumb_text:
+        # The thumbnail is what people see first; the title and captions continue its idea so the post reads as one.
+        context += f'\nThe thumbnail of the video says: "{thumb_text}"' + THUMB_TEXT_RULES
+    camp = campaigns.from_body(body)
+    context += campaigns.prompt_block(camp)
     frames = [f.split(",", 1)[-1] for f in body.get("frames", [])][:4]
+    language = body.get("language") or "English"
+    prompt = POST_PROMPT.format(context=context, language=language)
+    out = ollama_json(model, prompt, POST_SCHEMA, frames, 0.7)
+    if names:
+        out["person"] = " y ".join(names) if language.lower().startswith(("span", "esp")) else " and ".join(names)
+    out = sharper_title(model, out, context, language, thumb_text, lines, names)
+    out = third_person(model, out, language)
+    if lines:
+        out = caption_description(model, out, body.get("transcript") or "", lines, language, names)
+    return with_viral_tags(campaigns.apply(clean_post_text(out, model["label"]), camp), viral)
+
+
+VIRAL_LINES_PROMPT = """This is what is said in a short video clip (its captions):
+"{transcript}"
+
+Other text shown with the clip (title, on-screen text): "{named_in}"
+
+1. "lines": the 3 lines a viewer would screenshot, quote in the comments or send to a friend: a bold claim, a strong
+   opinion, a punchline, a confession, a surprising fact or number, a moment of conflict or emotion. Skip greetings,
+   filler and set-up. Copy each line EXACTLY as it is written above (same words, same order, 3 to 15 words), strongest first.
+2. "names": the names or nicknames of the people in the clip (who talks, who they talk to or about), spelled exactly as
+   written above, e.g. "Liguita", "El Fuerte". The two people who face off or disagree go first. Only real names or
+   nicknames written above: never "papá", "hermano", "bro", "él" or a job. Empty list if no name is written.
+Reply with JSON only: {{"lines": ["...", "...", "..."], "names": ["...", "..."]}}"""
+
+# Words the model takes for a name: family words, forms of address, pronouns.
+NOT_NAMES = {"papa", "mama", "hermano", "hermana", "bro", "brother", "dios", "senor", "senora", "amigo", "amiga", "hijo",
+             "hija", "jefe", "mano", "loco", "compa", "el", "ella", "yo", "tu", "usted", "he", "she", "man", "dude", "shorts"}
+
+
+def names_block(names: list[str]) -> str:
+    """Prompt text asking for the people's names and, with two, a face-off framing."""
+    s = ("\n\nTHE PEOPLE IN THE CLIP, by the names written in its captions: " + ", ".join(names)
+         + ". Always call them by these names (never \"él\", \"este hombre\", \"the guest\").")
+    if len(names) >= 2:
+        s += (f" Frame the post as a face-off between them: the YouTube title compares them ({names[0]} vs {names[1]}) with"
+              " the strongest line or what's at stake, and each description and caption says who says what and asks"
+              " the viewer who is right.")
+    return s
+
+
+def face_off(names: list[str]) -> str:
+    """"Liguita vs Fuerte" with two names, the one name alone, or ""."""
+    return f"{names[0]} vs {names[1]}" if len(names) >= 2 else (names[0] if names else "")
+
+
+def _plain(s: str) -> list[str]:
+    """Lowercase words without accents or punctuation, to compare a line with the transcript."""
+    s = unicodedata.normalize("NFD", s.lower()).encode("ascii", "ignore").decode()
+    return re.findall(r"\w+", s)
+
+
+def viral_lines(model: dict, transcript: str, named_in: str = "") -> tuple[list[str], list[str]]:
+    """Up to 3 lines really said in the clip (the most shareable first) and up to 2 people's names written in its
+    captions or title. Both empty when there's no speech or anything fails."""
+    transcript = re.sub(r"\s+", " ", transcript).strip()[:2500]
+    named_in = re.sub(r"\s+", " ", named_in.replace("*", "")).strip()[:400]
+    if len(transcript.split()) < 6:
+        return [], []
     try:
-        res = ollama("/api/chat", {
-            "model": model, "stream": False, "format": POST_SCHEMA, "keep_alive": "30m",
-            "options": {"temperature": 0.7, **OLLAMA_OPTIONS},
-            "messages": [{"role": "user", "content": POST_PROMPT.format(context=context, language=body.get("language") or "English"),
-                          "images": frames}],
-        }, timeout=600)
-        out = json.loads(res["message"]["content"])
-    except Exception as e:
-        raise HTTPException(502, f"{model} failed: {e}")
-    return clean_post_text(out, model)
+        arr = {"type": "array", "items": {"type": "string"}}
+        schema = {"type": "object", "required": ["lines", "names"], "properties": {"lines": arr, "names": arr}}
+        j = ollama_json(model, VIRAL_LINES_PROMPT.format(transcript=transcript.replace('"', "'"),
+                                                         named_in=named_in.replace('"', "'") or "-"), schema, None, 0.3)
+    except Exception:
+        return [], []
+    said = " " + " ".join(_plain(transcript)) + " "
+    out = []
+    for t in j.get("lines") or []:
+        t = re.sub(r"\s+", " ", str(t)).strip(" \"'«»“”.,…")
+        words = _plain(t)
+        # Only lines really in the transcript (the model sometimes paraphrases or invents one).
+        if 3 <= len(words) <= 18 and f" {' '.join(words)} " in said and t not in out and not CJK.search(t):
+            out.append(t)
+    return out[:3], clip_names(j.get("names") or [], f"{transcript} {named_in}")
+
+
+def clip_names(raw: list, text: str) -> list[str]:
+    """The model's names that really are written (capitalized) in the clip's text: no invented or common words."""
+    plain_text = " " + " ".join(_plain(text)) + " "
+    out, seen = [], set()
+    for n in raw:
+        n = re.sub(r"\s+", " ", str(n)).strip(" \"'«»“”.,…@#")
+        words = _plain(n)
+        key = " ".join(words)
+        if not words or len(words) > 3 or len(n) > 30 or key in seen or CJK.search(n):
+            continue
+        if all(w in NOT_NAMES for w in words) or f" {key} " not in plain_text:
+            continue
+        # A name is written with a capital somewhere (whisper and titles capitalize names; "fuerte" alone is just a word).
+        found = re.findall(r"(?<!\w)" + r"\W+".join(re.escape(w) for w in n.split()) + r"(?!\w)", text, re.I)
+        if not any(f[0].isupper() for f in found):
+            continue
+        if n.isupper() and len(n) > 3:
+            n = n.title()  # "LIGUITA" from the on-screen hook -> "Liguita"
+        seen.add(key)
+        out.append(n)
+    return out[:2]
+
+
+DESC_PROMPT = """You run a social media channel and write the YouTube description for a clip of {person}.
+What is said in the clip (its captions):
+"{transcript}"
+
+The strongest line said in the clip: «{line}»
+
+Write exactly 2 short lines in {language}, using ONLY what is said above (no topics, opinions or words that aren't in it):
+- "context": what {person} means with that line or what happens right around it, in third person, with a concrete
+  detail from the captions (max 120 characters). Not a summary of "the conversation", not a judgment like "deep debate".
+- "question": one short question to the viewer about that exact line, the way a friend would ask it (max 80 characters).
+No hashtags, no emoji, no exclamation marks, never "this video" / "this conversation".
+Reply with JSON only: {{"context": "...", "question": "..."}}"""
+
+
+def _no_tags(s: str) -> str:
+    return re.sub(r"#\w+", " ", s or "")
+
+
+def caption_description(model: dict, out: dict, transcript: str, lines: list[str], language: str, names: list[str] = ()) -> dict:
+    """YouTube description built from the clip's captions: the strongest line quoted, what it means, a question,
+    then the first pass's hashtags. Falls back to the quote on top of the first pass's text if the model fails."""
+    yt = out.setdefault("youtube", {})
+    old = str(yt.get("description") or "")
+    tags = " ".join(dict.fromkeys(re.findall(r"#\w+", old)))
+    quote = thumb_quote(lines[0]) or f"«{lines[0]}»"
+    if names:
+        quote = f"{face_off(names)}: {quote}"  # "Liguita vs Fuerte: «…»"
+    person = out.get("person") or "esta persona"
+    vs = (f"\nThe two people face off: {names[0]} vs {names[1]}. The context line says who says what (by name),"
+          " and the question asks the viewer who is right, naming both.") if len(names) >= 2 else ""
+    body = ""
+    try:
+        schema = {"type": "object", "required": ["context", "question"],
+                  "properties": {"context": {"type": "string"}, "question": {"type": "string"}}}
+        j = ollama_json(model, DESC_PROMPT.format(person=person, transcript=re.sub(r"\s+", " ", transcript).strip()[:2500].replace('"', "'"),
+                                                  line=lines[0], language=language) + vs, schema, None, 0.5)
+        parts = [re.sub(r"\s+", " ", _no_tags(str(j.get(k) or ""))).strip() for k in ("context", "question")]
+        if all(parts) and not any(CJK.search(p) or GUEST_WORD.search(p) or AI_PHRASES.search(p) or speaks_as_guest(p) for p in parts):
+            body = "\n".join(parts)
+    except Exception:
+        pass
+    if not body:
+        # Keep the first pass's text under the quote, unless it already carries a viral line (hashtags don't count).
+        rest = _no_tags(old).strip()
+        if any(shares_words(rest, t) for t in lines):
+            return out
+        body = rest
+    yt["description"] = f"{quote}\n{body}".strip() + (f"\n\n{tags}" if tags else "")
+    return out
+
+
+def viral_words(body: dict) -> list[str]:
+    """The accounts' viral words sent with the request: trimmed, no repeats, at most 40."""
+    raw = body.get("viral_words")
+    items = raw if isinstance(raw, list) else re.split(r"[,\n]+", str(raw or ""))
+    out, seen = [], set()
+    for w in items:
+        w = re.sub(r'[{}"]', "", str(w)).strip()[:40]
+        if w and w.lower() not in seen:
+            seen.add(w.lower())
+            out.append(w)
+    return out[:40]
+
+
+def viral_block(words: list[str]) -> str:
+    """Prompt text (no braces: it goes through .format()) asking the model to use the account's viral words."""
+    if not words:
+        return ""
+    plain = [w for w in words if not w.startswith("#")]
+    tags = [w for w in words if w.startswith("#")]
+    s = "\n\nVIRAL WORDS of the account this is posted on (they bring views there):"
+    if plain:
+        s += ("\n- Words: " + ", ".join(plain) + ". Work the ones that fit this clip into the YouTube title (at least one when"
+              " it fits naturally), the first line of each caption and the description, and add them to youtube.tags."
+              " Never force a word that has nothing to do with the clip.")
+    if tags:
+        s += "\n- Hashtags to use in every caption and the YouTube description: " + " ".join(tags)
+    return s
+
+
+def with_viral_tags(post: dict, words: list[str]) -> dict:
+    """Make sure the account's # viral words are in every caption and the description, and its plain words in the tags."""
+    tags = [w for w in words if re.fullmatch(r"#\w+", w)]
+    if tags:
+        post["youtube"]["description"] = campaigns.ensure_tags(post["youtube"]["description"], tags)
+        for p in ("tiktok", "instagram", "facebook"):
+            post[p]["caption"] = campaigns.ensure_tags(post[p]["caption"], tags)
+    have = {t.lower() for t in post["youtube"]["tags"]}
+    extra = [w for w in words if not w.startswith("#") and w.lower() not in have]
+    post["youtube"]["tags"] = (post["youtube"]["tags"] + extra)[:15]
+    return post
+
+
+# A second, short pass just for the YouTube title: small models follow one focused task far better than one rule
+# among many, and the first pass's emotion and peak moment give it something concrete to write about.
+TITLE_PROMPT = """You run a social media channel and write the YouTube Shorts title for a clip of someone else.{context}
+Who is in the clip: {person}
+The feeling this clip gives: {emotion}
+The peak moment: {moment}
+Why people would share it: {angle}
+
+Write 5 different titles, each one entirely in {language}, each with a different idea:
+1. the guest's strongest line, as a quote in «» or "", shortened to its most emotional words
+2. what happened to the guest, in third person, teasing the turning point without revealing it
+3. a short human reaction from the channel to the moment (like you'd say it to a friend)
+4. something nobody expected about this person or moment, in third person
+5. a question about the moment that people will want to answer in the comments
+Rules: you are NOT the person in the clip: outside of quotes, never write "I/me/my" as if you were them; refer to them as
+he/she/their name, written in {language} (never the English word "guest").
+Max 60 characters each; carry the feeling; use a concrete detail from the clip; sound like a real person, not an ad or an AI
+(no "Don't miss", "Discover", "Incredible", "This video"); no hashtags; no ALL CAPS sentences; at most 1 emoji and only if it
+fits the feeling; never promise what the clip doesn't show.
+Then set "best" to the number (1-5) of the most natural title that would most make a stranger stop and watch.
+Reply with JSON only."""
+
+TITLE_SCHEMA = {"type": "object", "required": ["titles", "best"], "properties": {
+    "titles": {"type": "array", "items": {"type": "string"}}, "best": {"type": "integer"}}}
+
+
+CJK = re.compile("[぀-ヿ㐀-鿿가-힯]")  # qwen now and then leaks a Chinese character
+GUEST_WORD = re.compile(r"\bguests?\b", re.I)  # the prompt's English word leaking into the text
+CJK_OK = re.compile(r"chin|japan|korea|中文|日本|한국", re.I)
+FIRST_PERSON = re.compile(r"\b(yo|mi|mis|me|conmigo|estoy|soy|tengo|voy|quiero|puedo|i|my|me|mine|i'm|i've|eu|meu|minha)\b", re.I)
+
+
+def speaks_as_guest(text: str) -> bool:
+    """True when the text says I/my/me outside of quotes, as if the channel were the person in the clip."""
+    return bool(FIRST_PERSON.search(re.sub(r"[«\"“'‘][^»\"”'’]*[»\"”'’]", " ", text)))
+
+
+# Phrases that make post text read like an ad or an AI. A sentence containing one is dropped.
+AI_PHRASES = re.compile(r"no te (lo )?pierdas|descubre|este video|en este video|prepárate|don'?t miss|discover|this video|"
+                        r"get ready|you won'?t believe|no vas a creer|no puedes creer|no te imaginas|esto no es una broma", re.I)
+
+
+def human_text(text: str) -> str:
+    """Drop ad-like sentences (keeps hashtag lines and anything left if every sentence would go)."""
+    out = []
+    for line in text.split("\n"):
+        if line.strip().startswith("#"):
+            out.append(line)
+            continue
+        kept = [s for s in re.split(r"(?<=[.!?…])\s+", line) if not AI_PHRASES.search(s)]
+        out.append(calm_caps(" ".join(kept) if kept or not line.strip() else line))
+    result = "\n".join(out)
+    return result if re.sub(r"#\w+|\s", "", result) else text
+
+
+# Three or more ALL-CAPS words in a row (the model copies the thumbnail's caps): reads as shouting in a caption.
+CAPS_RUN = re.compile(r"(?<!#)\b[A-ZÁÉÍÓÚÑÜ]{2,}\b(?:[\s,]+\b[A-ZÁÉÍÓÚÑÜ]+\b){2,}")
+
+
+def calm_caps(line: str) -> str:
+    """"¡RONQUÉ Y LE ATRACARON!" -> "¡Ronqué y le atracaron!" (keeps hashtags and short acronyms)."""
+    def fix(m):
+        s = m.group(0).lower()
+        start = m.start() == 0 or re.search(r"[.!?¡¿«\"]\s*$", line[:m.start()])
+        return s[0].upper() + s[1:] if start else s
+    return CAPS_RUN.sub(fix, line)
+
+
+THIRD_PERSON_PROMPT = """These social media texts were written by a channel that posts a clip of another person ({person}),
+but some of them speak as if the channel WERE that person ("I", "my", "me"). Rewrite each one so the channel talks ABOUT
+the person in third person (he/she/their name). Keep the same meaning, length, tone, emoji and hashtags; a line the person
+really said may stay only inside quotes. Write in {language}, natural and casual. Texts:
+{texts}
+Reply with JSON only: {{"texts": ["...", ...]}} in the same order."""
+
+
+def third_person(model: dict, out: dict, language: str) -> dict:
+    """Rewrite the captions that speak as the person in the clip. Leaves everything as it was if anything fails."""
+    slots = [("youtube", "description"), ("tiktok", "caption"), ("instagram", "caption"), ("facebook", "caption")]
+    bad = [(p, f) for p, f in slots if speaks_as_guest(re.sub(r"#\w+", "", str(out.get(p, {}).get(f, ""))))]
+    if not bad:
+        return out
+    try:
+        texts = "\n".join(f"{i + 1}. {json.dumps(str(out[p][f]), ensure_ascii=False)}" for i, (p, f) in enumerate(bad))
+        schema = {"type": "object", "required": ["texts"], "properties": {"texts": {"type": "array", "items": {"type": "string"}}}}
+        j = ollama_json(model, THIRD_PERSON_PROMPT.format(person=out.get("person") or "-", language=language, texts=texts),
+                        schema, None, 0.4)
+        for (p, f), t in zip(bad, j.get("texts") or []):
+            t = str(t).strip()
+            if t and not CJK.search(t):
+                out[p][f] = t
+    except Exception:
+        pass
+    return out
+
+
+def thumb_quote(thumb_text: str) -> str:
+    """The thumbnail line as a quoted title in normal case: "¿RONQUÉ Y ME ATRACARON" -> «Ronqué y me atracaron»."""
+    t = re.sub(r"^[¡¿\s]+|[!?¡¿.\s]+$", "", thumb_text or "").strip()
+    if len(t) < 6:
+        return ""
+    t = t.lower() if t.isupper() else t
+    return f"«{t[0].upper() + t[1:]}»"
+
+
+def shares_words(title: str, thumb_text: str) -> bool:
+    """True when the title uses at least one of the thumbnail's meaningful words (4+ letters, accents ignored)."""
+    strip = lambda s: unicodedata.normalize("NFD", s.lower()).encode("ascii", "ignore").decode()
+    words = {w for w in re.findall(r"\w{4,}", strip(thumb_text))}
+    return bool(words & set(re.findall(r"\w{4,}", strip(title))))
+
+
+def sharper_title(model: dict, out: dict, context: str, language: str, thumb_text: str = "", lines: list[str] = (),
+                  names: list[str] = ()) -> dict:
+    """Replace the YouTube title with the best of 5 emotional options. Keeps the first title if anything goes wrong."""
+    if not out.get("emotion") or not out.get("moment"):
+        return out
+    try:
+        prompt = TITLE_PROMPT.format(context=context, person=out.get("person") or "-", emotion=out["emotion"], moment=out["moment"],
+                                     angle=out.get("angle", ""), language=language)
+        j = ollama_json(model, prompt, TITLE_SCHEMA, None, 0.9)
+        titles = [re.sub(r"\s+", " ", re.sub(r"#\w+", "", str(t))).strip() for t in j.get("titles") or []]
+        titles = [re.sub(r"[¡¿\s]+$", "", t) for t in titles]  # small models end Spanish titles with an opening "¡" / "¿"
+        titles = [t for t in titles if 20 <= len(t) <= 80  # too short says nothing ("Ese día"), too long gets cut
+                  and (CJK_OK.search(language) or not CJK.search(t)) and not GUEST_WORD.search(t)]
+        quote = thumb_quote(thumb_text)
+        if quote and quote.lower() not in {t.lower() for t in titles}:
+            titles.append(quote)  # the thumbnail line itself, as the guest's quote: always one of the options
+        top = thumb_quote(lines[0]) if lines else ""
+        if top and len(top) <= 80 and top.lower() not in {t.lower() for t in titles}:
+            titles.append(top)  # the clip's strongest line, quoted: always one of the options
+        if names and lines:
+            # The face-off: "Liguita vs Fuerte: «La disciplina no se compra»", shortened to the name(s) + quote when too long.
+            vs = f"{face_off(names)}: {thumb_quote(lines[0]) or '«' + lines[0] + '»'}"
+            if len(vs) <= 90 and vs.lower() not in {t.lower() for t in titles}:
+                titles.append(vs)  # appended so the model's "best" index still points at its own pick
+        if titles:
+            best = int(j.get("best") or 1) - 1
+            ranked = ([titles[best]] if 0 <= best < len(titles) else []) + titles
+            # With thumbnail text, a title that shares its key words keeps the post consistent with the thumbnail.
+            if thumb_text:
+                ranked = [t for t in ranked if shares_words(t, thumb_text)] + [t for t in ranked if not shares_words(t, thumb_text)]
+            # Otherwise a title built on the clip's viral lines comes first.
+            elif lines:
+                hit = lambda t: any(shares_words(t, ln) for ln in lines)
+                ranked = [t for t in ranked if hit(t)] + [t for t in ranked if not hit(t)]
+            # With the people's names, titles that name them (both, for a face-off) come first.
+            if names:
+                named = lambda t: sum(n.lower() in t.lower() for n in names)
+                ranked = sorted(ranked, key=lambda t: -named(t))
+            # The channel talks about the guest; a title that speaks as the guest (outside quotes) is the last choice.
+            title = next((t for t in ranked if not speaks_as_guest(t)), ranked[0])
+            out.setdefault("youtube", {})["title"] = title
+            out["title_options"] = titles
+    except Exception:
+        pass
+    return out
 
 
 def clean_post_text(out: dict, model: str) -> dict:
@@ -867,14 +1331,15 @@ def clean_post_text(out: dict, model: str) -> dict:
             seen.add(t.lower())
             tags.append(t)
     return {
-        "youtube": {"title": title[:100], "description": tidy_hashtags(str(yt.get("description", "")), ("#shorts",)),
+        "youtube": {"title": title[:100], "description": tidy_hashtags(human_text(str(yt.get("description", ""))), ("#shorts",)),
                     "tags": tags[:12]},
-        "tiktok": {"caption": tidy_hashtags(str(out.get("tiktok", {}).get("caption", "")), ("#shorts",))[:2200]},
-        "instagram": {"caption": tidy_hashtags(str(out.get("instagram", {}).get("caption", "")), ("#shorts",))[:2200]},
+        "tiktok": {"caption": tidy_hashtags(human_text(str(out.get("tiktok", {}).get("caption", ""))), ("#shorts",))[:2200]},
+        "instagram": {"caption": tidy_hashtags(human_text(str(out.get("instagram", {}).get("caption", ""))), ("#shorts",))[:2200]},
         # Older or smaller models sometimes skip a platform: Facebook then reuses the Instagram caption.
-        "facebook": {"caption": tidy_hashtags(str(out.get("facebook", {}).get("caption", "")
-                                                  or out.get("instagram", {}).get("caption", "")), ("#shorts",))[:2200]},
+        "facebook": {"caption": tidy_hashtags(human_text(str(out.get("facebook", {}).get("caption", "")
+                                                  or out.get("instagram", {}).get("caption", ""))), ("#shorts",))[:2200]},
         "model": model,
+        **({"title_options": [t + " #Shorts" for t in out["title_options"]]} if out.get("title_options") else {}),
     }
 
 
@@ -898,9 +1363,7 @@ Write in {language}. Reply with JSON only."""
 @app.post("/api/photo-post-text")
 def ai_photo_post_text(body: dict):
     """Captions and hashtags for each platform, from the photos of a photo post."""
-    model = vision_model()
-    if not model:
-        raise HTTPException(503, "No local vision model found. Install Ollama and run: ollama pull qwen2.5vl:7b")
+    model = ai_model()
     ids = [str(x) for x in body.get("photos") or []][:4]  # the first photos are enough to know what it's about
     if not ids:
         raise HTTPException(400, "Add photos to the post first.")
@@ -910,9 +1373,11 @@ def ai_photo_post_text(body: dict):
         raise HTTPException(400, str(e))
     topic = (body.get("topic") or "").strip()[:300]
     context = f'\nThe creator says the post is about: "{topic}"' if topic else ""
+    camp = campaigns.from_body(body)
+    context += campaigns.prompt_block(camp)
     n = len(body.get("photos") or [])
     prompt = PHOTO_POST_PROMPT.format(n=n, context=context, language=body.get("language") or "English")
-    return clean_post_text(ollama_json(model, prompt, POST_SCHEMA, images, 0.75), model)
+    return campaigns.apply(clean_post_text(ollama_json(model, prompt, POST_SCHEMA, images, 0.75), model["label"]), camp)
 
 
 VIRAL_IMAGE_PROMPT = """You design ONE scroll-stopping image for a social media photo post (Instagram, Facebook, TikTok).
@@ -942,9 +1407,7 @@ VIRAL_LAYOUTS = {
 @app.post("/api/photos/design-text")
 def ai_design_text(body: dict):
     """Hook text, highlight word and labels for a viral image made from the post's photos."""
-    model = vision_model()
-    if not model:
-        raise HTTPException(503, "No local vision model found. Install Ollama and run: ollama pull qwen2.5vl:7b")
+    model = ai_model()
     ids = [str(x) for x in body.get("photos") or []][:5]
     if not ids:
         raise HTTPException(400, "Add photos to the post first.")
@@ -968,14 +1431,14 @@ def ai_design_text(body: dict):
     try:
         out = ollama_json(model, prompt, schema, images, 0.8)
     except Exception as e:
-        raise HTTPException(502, f"{model} failed: {e}")
+        raise HTTPException(502, f"{model['label']} failed: {e}")
     text = re.sub(r"#\w+", "", str(out.get("text") or "")).strip().strip('"').strip()
     accent = str(out.get("accent") or "").strip().strip('"')
     if accent.lower() not in text.lower():
         accent = max(text.split(), key=len, default="")
     labels_out = [re.sub(r"#\w+", "", str(x)).strip()[:30] for x in (out.get("labels") or []) if str(x).strip()]
     return {"text": text, "accent": accent, "labels": labels_out[:len(ids)] if layout != "hook" else [],
-            "position": out.get("position") if out.get("position") in ("top", "bottom") else "top", "model": model}
+            "position": out.get("position") if out.get("position") in ("top", "bottom") else "top", "model": model["label"]}
 
 
 THUMB_PROMPT = """You design the thumbnail (cover image) for a short vertical video (TikTok / Reels / Shorts).
@@ -995,9 +1458,7 @@ Reply with JSON only: {{"frame": <number 1-{n}>, "text": "...", "accent": "...",
 @app.post("/api/thumbnail")
 def ai_thumbnail(body: dict):
     """Picks the best cover frame among candidates and writes short, bold thumbnail text for it."""
-    model = vision_model()
-    if not model:
-        raise HTTPException(503, "No local vision model found. Install Ollama and run: ollama pull qwen2.5vl:7b")
+    model = ai_model()
     frames = [f.split(",", 1)[-1] for f in body.get("frames", [])][:6]
     if not frames:
         raise HTTPException(400, "No frames to choose from.")
@@ -1018,7 +1479,7 @@ def ai_thumbnail(body: dict):
     try:
         out = ollama_json(model, prompt, schema, frames, 0.6)
     except Exception as e:
-        raise HTTPException(502, f"{model} failed: {e}")
+        raise HTTPException(502, f"{model['label']} failed: {e}")
     text = re.sub(r"#\w+", "", str(out.get("text") or "")).strip().strip('"').strip()
     words = text.split()
     if len(words) > 5:  # the model sometimes writes a sentence; a thumbnail reads at a glance
@@ -1029,12 +1490,18 @@ def ai_thumbnail(body: dict):
     frame = int(out.get("frame") or 1)
     return {"frame": min(max(frame, 1), n) - 1, "text": text, "accent": accent,
             "position": out.get("position") if out.get("position") in ("top", "bottom") else "top",
-            "why": str(out.get("why") or "").strip(), "model": model}
+            "why": str(out.get("why") or "").strip(), "model": model["label"]}
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": API_VERSION, "model": model_name(), "device": _model_device or DEVICE, "ai": vision_model()}
+    return {"ok": True, "version": API_VERSION, "model": model_name(), "device": _model_device or DEVICE, "ai": ai_label()}
+
+
+def ai_label() -> str | None:
+    cfg = llm.load()
+    spec = llm.current(vision_model() if cfg["provider"] == "local" else None)
+    return spec["label"] if spec else None
 
 
 def model_name() -> str:
@@ -1104,7 +1571,8 @@ def analysis_file(media: str) -> Path:
     return ANALYSIS / f"{media}.json"
 
 
-def run_auto(job_id: str, fetch_id: str, opts: dict):
+def run_auto(job_id: str, fetch_id: str, opts: dict, on_done=None):
+    """on_done(result, error) is called at the end (channels.py follows its imports with it)."""
     job, nid = auto_jobs[job_id], auto_jobs[job_id]["nid"]
 
     def report(progress: float, phase: str, step: str = ""):
@@ -1152,27 +1620,38 @@ def run_auto(job_id: str, fetch_id: str, opts: dict):
         res = f"{min(r['width'], r['height'])}p · " if r.get("height") else ""
         notify.update(nid, status="done", read=False, progress=1.0, result=result,
                       body=f"{res}{words} words transcribed. Open it to see the {opts['count']} best moments.")
+        if on_done:
+            on_done(result, None)
     except Exception as e:
         cancelled = str(e) == "cancelled"
         if cancelled and job.get("result") and not job.get("analyzing"):
             fetch.delete_media(job["result"]["media"])  # while analyzing, ffmpeg still holds it open
         notify.update(nid, status="cancelled" if cancelled else "error", read=cancelled,
                       body="Cancelled." if cancelled else str(e))
+        if on_done:
+            on_done(None, "Cancelled." if cancelled else str(e))
     finally:
         auto_jobs.pop(job_id, None)
 
 
-@app.post("/api/import-moments")
-def start_import_moments(body: dict):
+def import_moments(body: dict, on_done=None, title: str = "") -> dict:
     opts = {"len": int(body.get("len") or 60), "count": int(body.get("count") or 5),
             "aspect": "9:16"}  # clips are always Shorts (1080x1920)
     fetch_id = fetch.start_fetch(body)["job"]  # validates the link and the times, then starts downloading
     job_id = uuid.uuid4().hex
-    nid = notify.add("moments", str(body.get("url", "")).strip()[:120], "Starting…", status="running",
+    nid = notify.add("moments", (title or str(body.get("url", "")).strip())[:120], "Starting…", status="running",
                      job=job_id, progress=0.0)
     auto_jobs[job_id] = {"nid": nid, "fetch": fetch_id}
-    threading.Thread(target=run_auto, args=(job_id, fetch_id, opts), daemon=True).start()
+    threading.Thread(target=run_auto, args=(job_id, fetch_id, opts, on_done), daemon=True).start()
     return {"job": job_id, "notification": nid}
+
+
+@app.post("/api/import-moments")
+def start_import_moments(body: dict):
+    return import_moments(body)
+
+
+channels.start(import_moments)  # passive mode: watch the saved channels for new videos
 
 
 @app.post("/api/import-moments/{job_id}/stop")
@@ -1198,7 +1677,8 @@ def get_analysis(media: str):
 
 @app.get("/")
 def index():
-    return FileResponse(ROOT / "index.html")
+    # no-cache: Chrome otherwise keeps a stale copy of the page for a while after it changes.
+    return FileResponse(ROOT / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/reader")

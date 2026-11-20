@@ -1,7 +1,8 @@
 """Import a video from a link (YouTube, Twitch, Kick, X and anything else yt-dlp supports).
 
 - Videos and past streams: downloaded whole, or just a time range for long VODs.
-- Live streams: recorded for a set number of minutes from now.
+- Live streams: recorded for a set number of minutes from now, or (YouTube) the last few hours
+  that already aired, rewound from the live edge (see live_rewind.py).
 
 Downloads land in downloads/ and are served back to the page at /api/media/<id>, so the browser
 streams them like any other video (with seeking) instead of loading them into memory.
@@ -26,6 +27,7 @@ DOWNLOADS = ROOT / "downloads"
 MEDIA_ID = re.compile(r"^[0-9a-f]{32}$")
 TIME = re.compile(r"^(\d+:){0,2}\d+(\.\d+)?$")  # 90, 1:30, 1:02:30
 MAX_RECORD_MIN = 180
+MAX_REWIND_MIN = 120 * 60  # YouTube keeps the last 120 hours of a live stream
 
 # Default quality cap when the page doesn't pick one: 0 = the highest resolution the video has (8K included).
 # 8K matters for vertical clips: a 9:16 crop of 4K is only 1215x2160, of 8K it's 2430x4320 (true 4K exports).
@@ -71,12 +73,26 @@ def ytdlp_base() -> list[str]:
     runtimes = [r for r in ("deno", "node") if shutil.which(r)]
     if runtimes:
         cmd += ["--js-runtimes", ",".join(runtimes)]
-    # Signed-in cookies get past YouTube's "confirm you're not a bot" wall.
-    if COOKIES_FILE.exists():
+    # Signed-in cookies get past YouTube's "confirm you're not a bot" wall. A cookies.txt without the login
+    # cookies can't sign in, so skip it and fall back to a browser. yt-dlp writes rotated cookies back to
+    # the file after each run, which keeps a good export alive.
+    if COOKIES_FILE.exists() and not cookies_problem():
         cmd += ["--cookies", str(COOKIES_FILE)]
-    elif COOKIES_FROM_BROWSER:
-        cmd += ["--cookies-from-browser", COOKIES_FROM_BROWSER]
+    elif browser := cookies_browser():
+        cmd += ["--cookies-from-browser", browser]
     return cmd
+
+
+def cookies_browser() -> str:
+    """Browser to read YouTube cookies from: YTDLP_COOKIES_FROM_BROWSER, else Firefox if it's installed.
+
+    Firefox is the one browser on Windows whose cookies yt-dlp can read while it's open, and it keeps
+    the login fresh by itself, so a YouTube sign-in there never needs exporting again.
+    """
+    if COOKIES_FROM_BROWSER:
+        return COOKIES_FROM_BROWSER
+    profiles = Path(os.environ.get("APPDATA", "")) / "Mozilla" / "Firefox" / "Profiles"
+    return "firefox" if os.environ.get("APPDATA") and profiles.is_dir() else ""
 
 
 def cookies_problem() -> str | None:
@@ -101,9 +117,9 @@ def cookies_problem() -> str | None:
     return None
 
 
-COOKIE_HOWTO = ("Export it again while signed in to youtube.com: in a private window, sign in, open youtube.com, "
-                "export the cookies with a cookies.txt extension, then close that window right away so they aren't "
-                "rotated. (Chrome and Edge block yt-dlp from reading their cookies, which loses the login ones.)")
+COOKIE_HOWTO = ("Lasting fix: install Firefox and sign in to youtube.com there; the app reads its cookies "
+                "automatically and they stay fresh. Or export cookies.txt again: in a private window, sign in, open "
+                "youtube.com, export with a cookies.txt extension, then close that window right away. No restart needed.")
 
 
 def ytdlp_error(stderr: str) -> str:
@@ -114,7 +130,7 @@ def ytdlp_error(stderr: str) -> str:
         problem = cookies_problem()
         if problem:
             return f"This video is age-restricted, so YouTube needs a signed-in account, but {problem}. {COOKIE_HOWTO}"
-        if COOKIES_FILE.exists() or COOKIES_FROM_BROWSER:
+        if COOKIES_FILE.exists() or cookies_browser():
             return ("This video is age-restricted and YouTube didn't accept your cookies. They may have expired, or the "
                     "account isn't age-verified (check by opening the video on youtube.com). " + COOKIE_HOWTO)
         return ("This video is age-restricted, so YouTube needs a signed-in, age-verified account. Put that account's "
@@ -123,12 +139,13 @@ def ytdlp_error(stderr: str) -> str:
         problem = cookies_problem()
         if problem:
             return f"YouTube wants this computer to sign in to confirm it's not a bot, but {problem}. {COOKIE_HOWTO}"
-        if COOKIES_FILE.exists() or COOKIES_FROM_BROWSER:
-            return ("YouTube still asks to confirm it's not a bot even with your cookies. They may have expired: "
-                    "export a fresh cookies.txt (or sign in again in the browser) and retry.")
-        return ("YouTube wants this computer to sign in to confirm it's not a bot. Fix: export your YouTube cookies "
-                "to cookies.txt in the app folder (or set YTDLP_COOKIES_FROM_BROWSER=firefox) and restart the app. "
-                "It also often clears by itself within an hour, or download the video yourself and drop the file in.")
+        if COOKIES_FILE.exists():
+            return ("YouTube still asks to confirm it's not a bot even with your cookies.txt. They may have expired. "
+                    + COOKIE_HOWTO)
+        if browser := cookies_browser():
+            return (f"YouTube still asks to confirm it's not a bot with your {browser} cookies. Open youtube.com in "
+                    f"{browser}, make sure you're signed in, then retry.")
+        return "YouTube wants this computer to sign in to confirm it's not a bot. " + COOKIE_HOWTO
     return msg
 
 
@@ -224,7 +241,7 @@ def finish(job: dict, media: str, out: Path, title: str, live: bool):
     })
 
 
-def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, max_height: int):
+def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, max_height: int, rewind_min: float = 0):
     job = fetch_jobs[job_id]
     media = uuid.uuid4().hex
     out = DOWNLOADS / f"{media}.mp4"
@@ -242,7 +259,15 @@ def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, ma
         title = meta.get("title") or "video"
         job.update(title=title, live=live)
 
-        if live:
+        rewind = live and rewind_min > 0
+        if rewind and meta.get("extractor_key") != "Youtube":
+            raise RuntimeError("Grabbing what already aired works for YouTube live streams. For Twitch or Kick, open the "
+                               "stream's past broadcast (its VOD link, e.g. twitch.tv/videos/…) and use From / To.")
+        if rewind and meta.get("release_timestamp"):
+            # Can't go back further than the stream's start.
+            rewind_min = min(rewind_min, max(1.0, (time.time() - meta["release_timestamp"]) / 60))
+
+        if live and not rewind:
             job.update(status="recording", progress=0.0)
             if record_live(job_id, meta, out, record_min * 60, max_height):
                 return finish(job, media, out, title, True)
@@ -251,13 +276,23 @@ def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, ma
         # whole video at ~20x. So for a YouTube range, fetch everything and cut the range out locally.
         cut_locally = (start or end) and not live and meta.get("extractor_key") == "Youtube"
         dest = DOWNLOADS / f"{media}.full.mp4" if cut_locally else out
-        cmd = ytdlp_base() + format_args(max_height) + [
+        base, fmt = ytdlp_base(), format_args(max_height)
+        if rewind:
+            # Same yt-dlp, wrapped so it starts `rewind_min` before the live edge and stops at it. Only the
+            # from-start formats can reach back; without them yt-dlp would quietly record from now instead.
+            base = [sys.executable, str(ROOT / "live_rewind.py"), f"{rewind_min * 60:g}"] + base[3:] + ["--live-from-start"]
+            gen = "[protocol=http_dash_segments_generator]"
+            fmt = ["-f", f"bv*{gen}+ba{gen}/b{gen}", *fmt[2:]]
+        cmd = base + fmt + [
             "--merge-output-format", "mp4", "-o", str(dest), "-N", "4",
             "--no-part", "--newline", "--progress",
-            "--progress-template", "download:PROGRESS %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s",
+            "--progress-template", "download:PROGRESS %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s "
+            "%(progress.fragment_index)s %(progress.fragment_count)s",
         ]
         limit = 0.0
-        if live:
+        if rewind:
+            pass  # live_rewind.py ends the download at the live edge by itself
+        elif live:
             limit = record_min * 60
             # Record from now; ffmpeg stops by itself after `limit` seconds and closes the file cleanly.
             cmd += ["--downloader", "ffmpeg", "--downloader-args", f"ffmpeg_i:-t {limit:g}"]
@@ -270,7 +305,7 @@ def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, ma
                 cmd += ["--download-sections", f"*{start or '0'}-{end or 'inf'}"]
         cmd += ["--", url]
 
-        job.update(status="recording" if live else "downloading", progress=0.0)
+        job.update(status="recording" if live and not rewind else "downloading", progress=0.0)
         if limit and not cut_locally:
             # ffmpeg (live and time-range downloads) reports no byte progress; time it instead.
             job["clock"] = (time.time(), limit)
@@ -281,10 +316,21 @@ def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, ma
         err_lines: list[str] = []
         threading.Thread(target=lambda: err_lines.extend(proc.stderr), daemon=True).start()
         first, last_total = True, 0
+        segments, tracks = 0, {}  # live rewind: segments per track (from live_rewind.py), track -> segments done
         for line in proc.stdout:
-            if not line.startswith("PROGRESS "):
+            if line.startswith("REWIND "):
+                segments = max(segments, int(line.split()[1]))
                 continue
-            done, total, est = (int(float(v)) if v not in ("NA", "None") else 0 for v in line.split()[1:4])
+            if "PROGRESS " not in line:
+                continue
+            # A live rewind downloads picture and sound at once, each line prefixed with its track ("2: PROGRESS …").
+            track, rest = line.split("PROGRESS ", 1)
+            done, total, est, frag, frags = (int(float(v)) if v not in ("NA", "None") else 0 for v in rest.split()[:5])
+            if rewind:
+                tracks[track.strip()] = max(tracks.get(track.strip(), 0), frag)
+                if segments:
+                    job["progress"] = round(min(0.99, sum(tracks.values()) / (segments * max(2, len(tracks)))), 3)
+                continue
             total = total or est
             if not total:
                 continue
@@ -300,7 +346,11 @@ def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, ma
         if job.get("stopping"):
             raise Cancelled()
         if proc.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
-            raise RuntimeError(ytdlp_error("".join(err_lines)))
+            err = ytdlp_error("".join(err_lines))
+            if rewind and ("format is not available" in err or "recording is not available" in err):
+                err = ("YouTube doesn't keep earlier footage for this stream (its DVR / rewind is turned off), so only "
+                       "recording from now works. Pick a \"Record the next…\" option instead.")
+            raise RuntimeError(err)
         if cut_locally:
             job.update(status="cutting", progress=0.99)
             # Stream copy: instant, starts on the keyframe at or just before `start`.
@@ -318,6 +368,8 @@ def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, ma
             proc.wait()  # Windows can't delete files a dying ffmpeg still holds
         out.unlink(missing_ok=True)
         (DOWNLOADS / f"{media}.full.mp4").unlink(missing_ok=True)
+        for part in DOWNLOADS.glob(f"{media}.*"):  # unmerged picture/sound tracks (<id>.f299.mp4, .ytdl)
+            part.unlink(missing_ok=True)
         job.update(status="error", error="Cancelled." if isinstance(e, Cancelled) else str(e), cancelled=isinstance(e, Cancelled))
     finally:
         procs.pop(job_id, None)
@@ -342,12 +394,16 @@ def start_fetch(body: dict):
         raise HTTPException(400, "record_min must be a number")
     record_min = max(0.5, min(MAX_RECORD_MIN, record_min))
     try:
+        rewind_min = max(0.0, min(MAX_REWIND_MIN, float(body.get("rewind_min") or 0)))
+    except ValueError:
+        raise HTTPException(400, "rewind_min must be a number")
+    try:
         max_height = int(body.get("max_height", DEFAULT_MAX_HEIGHT) or 0)  # 0 = best available
     except ValueError:
         raise HTTPException(400, "max_height must be a number")
     job_id = uuid.uuid4().hex
     fetch_jobs[job_id] = {"status": "reading link", "progress": 0.0}
-    threading.Thread(target=run_fetch, args=(job_id, url, start, end, record_min, max(0, max_height)), daemon=True).start()
+    threading.Thread(target=run_fetch, args=(job_id, url, start, end, record_min, max(0, max_height), rewind_min), daemon=True).start()
     return {"job": job_id}
 
 

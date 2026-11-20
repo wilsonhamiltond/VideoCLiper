@@ -261,10 +261,23 @@ def ai_status():
     return {"available": bool(p), "provider": p and p["name"]}
 
 
+def _free_ollama_vram():
+    """Unload Ollama's models from the GPU: the vision model (~6 GB) and SDXL don't both fit in 12 GB,
+    and SD then crawls (about 10x slower). Ollama reloads its model on the next AI caption request."""
+    try:
+        for m in _ollama("/api/ps").get("models", []):
+            _ollama("/api/generate", {"model": m["name"], "keep_alive": 0}, timeout=30)
+    except Exception:
+        pass  # Ollama not running: nothing to free
+
+
 def _generate(job: dict, prompt: str, aspect: str, provider: dict):
     w, h = ASPECTS.get(aspect, ASPECTS["4:5"])
     work = Path(tempfile.mkdtemp(prefix="clipstudio_ai_"))
     try:
+        if provider["kind"] == "sd":
+            job["status"] = "freeing GPU memory"
+            _free_ollama_vram()
         job["status"] = f"generating with {provider['name']}"
         if provider["kind"] == "sd":
             r = _get_json(SD_URL + "/sdapi/v1/txt2img", {

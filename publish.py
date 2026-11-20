@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 DATA = Path(os.environ.get("CLIPSTUDIO_DATA") or Path(__file__).parent / "data")
 ACCOUNTS = DATA / "accounts.json"
@@ -407,6 +407,7 @@ def _public(a: dict, apps: list[dict]) -> dict:
             "configured": bool(app and app.get("client_id") and app.get("client_secret")),
             "connected": bool(a.get("token")), "name": a.get("name"),
             "brand_banner": a.get("brand_banner"), "brand_logo": a.get("brand_logo"), "brand_handle": a.get("brand_handle"),
+            "viral_words": a.get("viral_words"),
             **{k: a.get(k) for k in ("follow_on", "follow_text", "follow_btn", "follow_at", "follow_dur")}}
 
 
@@ -542,6 +543,8 @@ def _account_fields(body: dict, platform: str) -> dict:
     if "brand_handle" in body:  # the @name drawn on clips; empty means the channel handle / username
         out["brand_handle"] = (_clean(body.get("brand_handle")) or "")[:40] or None
     # "Follow me" scene: a card with the logo, handle and a Follow button shown for a few seconds in each clip.
+    if "viral_words" in body:  # words / hashtags the AI works into this account's post text
+        out["viral_words"] = (_clean(body.get("viral_words")) or "")[:800] or None
     if "follow_on" in body:
         out["follow_on"] = bool(body.get("follow_on")) or None
     if "follow_text" in body:
@@ -680,6 +683,15 @@ async def upload_media(request: Request):
     return {"media_id": media_id, "size": out.stat().st_size}
 
 
+@router.get("/api/media/{media_id}/mp4")
+def download_media(media_id: str):
+    """The converted MP4 of a clip sent to /api/media (Export all saves it to disk). Kept for an hour."""
+    path = _media.get(media_id)
+    if not path or not path.exists():
+        raise HTTPException(404, "That converted clip is gone; export again.")
+    return FileResponse(path, media_type="video/mp4")
+
+
 # ---------- publishing ----------
 def tiktok_creator(token: str) -> dict:
     _, _, r = http("POST", "https://open.tiktokapis.com/v2/post/publish/creator_info/query/", body={},
@@ -738,10 +750,12 @@ def publish_youtube(acct_id: str, path: Path, f: dict, job: dict) -> dict:
         out.update(thumb_set=False)
         message += " The thumbnail wasn't set: the image was empty or over 2 MB."
     elif thumb:
-        ok, note = set_youtube_thumbnail(acct_id, video["id"], thumb, job)
+        ok, note = set_short_thumbnail(acct_id, video["id"], thumb, job)
         out.update(thumb_set=ok)
         message += " " + note
-    if f.get("yt_also_video", True):
+    # yt_format: "short" = the Short only, "both" = also a regular 16:9 copy; unset keeps yt_also_video (default on).
+    fmt = f.get("yt_format")
+    if fmt == "both" or (fmt != "short" and f.get("yt_also_video", True)):
         extra, note = _publish_youtube_long(acct_id, path, meta, thumb, job)
         out.update(extra)
         message += " " + note
@@ -877,6 +891,58 @@ def _publish_youtube_long(acct_id: str, path: Path, short_meta: dict, thumb: byt
         shutil.rmtree(work, ignore_errors=True)
 
 
+# ---------- Shorts thumbnails ----------
+# A thumbnail set while YouTube is still processing the upload is kept only as the 16:9 image (search, watch page):
+# YouTube never makes the vertical "shortsAspectRatio" version that Studio's Shorts list and the Shorts shelf show,
+# so those show a frame instead. Set after processing, the vertical version is made. So: wait for processing,
+# set it, check the vertical version exists, and set it once more if it doesn't.
+PROCESSING_WAIT_S = 900
+VERTICAL_CHECKS = (15, 30, 45)
+
+
+def _video_info(acct_id: str, video_id: str, parts: str) -> dict:
+    _, _, j = http("GET", f"https://www.googleapis.com/youtube/v3/videos?part={parts}&id={video_id}",
+                   headers={"Authorization": f"Bearer {access_token(acct_id)}"})
+    return (j.get("items") or [{}])[0]
+
+
+def _wait_processed(acct_id: str, video_id: str, job: dict) -> None:
+    """Wait (up to PROCESSING_WAIT_S) until YouTube has finished processing the upload."""
+    t0 = time.time()
+    while time.time() - t0 < PROCESSING_WAIT_S:
+        try:
+            status = _video_info(acct_id, video_id, "processingDetails").get("processingDetails", {}).get("processingStatus")
+        except PublishError:
+            status = None
+        if status in ("succeeded", "failed", "terminated"):
+            return
+        job["status"] = f"waiting for YouTube to finish processing the Short before setting its thumbnail ({int(time.time() - t0)}s)"
+        time.sleep(10)
+
+
+def _has_vertical_thumb(acct_id: str, video_id: str) -> bool:
+    try:
+        return "shortsAspectRatio" in _video_info(acct_id, video_id, "snippet").get("snippet", {}).get("thumbnails", {})
+    except PublishError:
+        return False
+
+
+def set_short_thumbnail(acct_id: str, video_id: str, thumb: bytes, job: dict) -> tuple[bool, str]:
+    """Set a Short's thumbnail so it also shows in Studio's Shorts list and the Shorts shelf. Returns (set?, message)."""
+    _wait_processed(acct_id, video_id, job)
+    for attempt in (1, 2):
+        ok, note = set_youtube_thumbnail(acct_id, video_id, thumb, job)
+        if not ok:
+            return ok, note
+        for wait in VERTICAL_CHECKS:
+            job["status"] = "checking that YouTube made the vertical Shorts thumbnail"
+            time.sleep(wait)
+            if _has_vertical_thumb(acct_id, video_id):
+                return True, "Thumbnail set, including the vertical one Studio and the Shorts shelf show."
+    return True, ("Thumbnail set for search and the watch page, but YouTube hasn't made the vertical version yet, so "
+                  "Studio's Shorts list may show a frame. If it still does in a few minutes, use Retry thumbnail.")
+
+
 # Waits between thumbnail attempts. YouTube refuses thumbnails for a while after a channel has set many in a
 # short time ("uploadRateLimitExceeded"), and now and then right after an upload; both pass if we wait.
 THUMB_RETRY_WAITS = (20, 40, 60, 120, 180, 300)
@@ -892,8 +958,7 @@ def set_youtube_thumbnail(acct_id: str, video_id: str, thumb: bytes, job: dict) 
                  timeout=120, headers={"Authorization": f"Bearer {access_token(acct_id)}", "Content-Type": "image/jpeg"})
             # YouTube stores it (search, watch page, channel), but the Shorts feed and Studio's Shorts list
             # show a frame from the video instead; there is no API to change that cover.
-            return True, ("Thumbnail set (shown in search and on the watch page; the Shorts feed and Studio's Shorts "
-                          "list show a frame of the video)." + (f" YouTube accepted it on try {attempt + 1}." if attempt else ""))
+            return True, "Thumbnail set." + (f" YouTube accepted it on try {attempt + 1}." if attempt else "")
         except PublishError as e:
             err = str(e)
             retry = "uploadRateLimitExceeded" in err or "rateLimitExceeded" in err or any(
@@ -928,7 +993,8 @@ def retry_youtube_thumbnail(acct_id: str, body: dict):
 
     def run():
         try:
-            ok, note = set_youtube_thumbnail(acct_id, video_id, thumb, job)
+            setter = set_short_thumbnail if body.get("short", True) else set_youtube_thumbnail
+            ok, note = setter(acct_id, video_id, thumb, job)
             job.update(status="done", thumb_set=ok, video_id=video_id, message=note,
                        url=f"https://youtube.com/shorts/{video_id}")
         except Exception as e:

@@ -29,6 +29,7 @@ import random
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
@@ -109,10 +110,77 @@ YT_ID = re.compile(r"(?:studio\.youtube\.com/video/|youtu\.be/|youtube\.com/(?:w
 MD_LINK = re.compile(r"\[([^\]]*)\]\(((?:https?://|video:)[^)\s]+)\)")
 UPLOAD_ID = re.compile(r"^video:([0-9a-f]{32})$")
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".mts", ".m2ts", ".3gp", ".wmv"}
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+PHOTO_SECONDS = 6  # an uploaded photo becomes a clip this long, with a slow zoom
 URL = re.compile(r"https?://\S+")
-HEADING = re.compile(r"^\s*(?:#+\s*)?(\d{1,2})[.)]\s+(.+?)\s*$")
+_RNG = r"(?:\s*\(\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—]\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\))?"
+# "[frases 2-3]" after a clip: it shows while the voice says sentences 2 to 3 of the section's narration.
+_SAY = r"(?:\s*\[\s*(?:[Ff]rases?|[Ss]entences?)\s*(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?\s*\])?"
+# "[encuadre 20,10,45,40]" after a clip: only that area of its picture is used (left, top, width, height in % of it).
+_N = r"\s*(-?\d{1,3}(?:\.\d+)?)\s*"
+_CROP = r"(?:\s*\[\s*(?:[Ee]ncuadre|[Cc]rop)" + _N + "," + _N + "," + _N + "," + _N + r"\])?"
+LINK_RANGE = re.compile(r"\[([^\]]*)\]\(((?:https?://|video:)[^)\s]+)\)" + _RNG + _SAY + _CROP)
+BARE_RANGE = re.compile(r"(?<![(\w])(https?://[^\s()]+)" + _RNG + _SAY + _CROP)
+RANGE_AFTER = re.compile(r"\s*\(\s*\d{1,2}:\d{2}(?::\d{2})?\s*[-–—]\s*\d{1,2}:\d{2}(?::\d{2})?\s*\)"
+                         r"|\s*\[\s*(?:frases?|sentences?)\s*\d{1,2}(?:\s*[-–—]\s*\d{1,2})?\s*\]"
+                         r"|\s*\[\s*(?:encuadre|crop)[-\d.,\s]*\]", re.I)
+
+
+def parse_crop(vals) -> list[float] | None:
+    """[left, top, width, height] as fractions of the picture, or None when missing or not a real area. The box
+    may reach past the picture (zoomed out): that part is filled with a blurred copy of the clip."""
+    if not vals or not all(vals):
+        return None
+    x, y, w, h = (max(-500.0, min(500.0, float(v))) / 100 for v in vals)
+    if w < 0.05 or h < 0.05 or x >= 1 or y >= 1 or x + w <= 0 or y + h <= 0:
+        return None
+    if abs(x) < 0.005 and abs(y) < 0.005 and abs(w - 1) < 0.005 and abs(h - 1) < 0.005:
+        return None
+    return [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]
+# A section heading: "1. Apertura (0:00-0:45)", "## 2) Caso", or "[0:50–1:30] 1. MONCHY CADENA" / "[0:00–0:25] INTRO".
+# Sections are numbered in order of appearance (the number in the heading is ignored), matching index.html.
+_T = r"\d{1,2}:\d{2}(?::\d{2})?"
+HEADING = re.compile(rf"^\s*(?:#+\s*)?(?:\[\s*({_T})\s*[-–—]\s*({_T})\s*\]\s*(?:\d{{1,2}}[.)]\s+)?|\d{{1,2}}[.)]\s+)(\S.*?)\s*$")
 TIME_RANGE = re.compile(r"\(?\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—]\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\)?")
-FIELD = re.compile(r"^\s*[*\-•]?\s*(visual|visuales|narraci[oó]n|narration|voz|texto)\s*:\s*(.*)$", re.I)
+FIELD = re.compile(r"^\s*[*\-•]?\s*(visual|visuales|narraci[oó]n|narration|voz)\s*:\s*(.*)$", re.I)
+# "* Efecto: Punch zoom + Whoosh": a visual effect and a sound effect where the section starts.
+FX_LINE = re.compile(r"^\s*[*\-•]?\s*(?:efectos?|effects?|fx)\s*:\s*(.*)$", re.I)
+FX_VIS = {"punch": "Punch zoom", "shake": "Shake", "flash": "Flash", "glitch": "Glitch", "push": "Slow push-in"}
+FX_SND = {"whoosh": "Whoosh", "boom": "Boom", "hit": "Hit", "riser": "Riser", "ding": "Ding", "pop": "Pop", "glitch": "Glitch"}
+FX_ALIAS = {"zoom": "punch", "golpe": "punch", "sacudida": "shake", "temblor": "shake", "destello": "flash",
+            "acercamiento": "push", "push-in": "push", "push in": "push", "swoosh": "whoosh", "bum": "boom", "golpe seco": "hit",
+            "subida": "riser", "campana": "ding"}
+
+
+def fx_key(text: str, table: dict) -> str:
+    t = text.strip().lower()
+    if not t or t in ("none", "ninguno", "nada", "-"):
+        return ""
+    for k, label in table.items():
+        if t in (k, label.lower()):
+            return k
+    a = FX_ALIAS.get(t, "")
+    return a if a in table else ""
+
+
+def parse_fx(text: str) -> dict:
+    """"Punch zoom + Whoosh" -> {"v": "punch", "s": "whoosh"}; one name alone is the visual if it is one, else the sound."""
+    # "… cada 3s" / "… every 3 s": repeated through the section's narration instead of once at the start.
+    m = re.search(r"\b(?:cada|every)\s*(\d+(?:[.,]\d+)?)\s*(?:s|seg|segundos?|seconds?)?\b", text, re.I)
+    every =max(1.0, min(30.0, float(m.group(1).replace(",", ".")))) if m else 0
+    if m:
+        text = text[:m.start()] + text[m.end():]
+    parts = [p for p in re.split(r"\s*[+/|,]\s*", text.strip()) if p]
+    if len(parts) >= 2:
+        return {"v": fx_key(parts[0], FX_VIS), "s": fx_key(parts[1], FX_SND), "every": every}
+    one = parts[0] if parts else ""
+    v = fx_key(one, FX_VIS)
+    return {"v": v, "s": "" if v else fx_key(one, FX_SND), "every": every}
+
+
+# Production notes that are not read aloud ("Texto: …" on screen, "Momento emotivo: …", "Música: …").
+NOTE = re.compile(r"^\s*[*\-•]?\s*(texto(?: en pantalla)?|text|momento\b[^:]{0,20}|m[uú]sica|music|nota|note|edici[oó]n|sfx|efecto[^:]{0,15})\s*:", re.I)
+QUOTE_START = re.compile(r"^\s*[*\-•]?\s*[\"“«]")
 
 
 # ---------- parsing ----------
@@ -132,34 +200,52 @@ def parse_guide(text: str) -> dict:
             continue
         m = re.match(r"^(?:t[ií]tulo(?: de trabajo)?|title)\s*:\s*(.+)$", line, re.I)
         if m and not sections:
-            title = m.group(1).strip()
+            title = m.group(1).strip().strip('"“”«»').strip()
             continue
         if re.match(r"^(?:duraci[oó]n|duration)", line, re.I) and not sections:
             continue
         h = HEADING.match(line)
         if h and not FIELD.match(line):
-            head = h.group(2)
+            head = h.group(3)
+            planned = [to_sec(h.group(1)), to_sec(h.group(2))] if h.group(1) else None
             tr = TIME_RANGE.search(head)
             if tr:
                 head = (head[: tr.start()] + head[tr.end():]).strip()
-            cur = {"n": int(h.group(1)), "heading": head.strip(" :"), "visual": "", "narration": "",
-                   "planned": [to_sec(tr.group(1)), to_sec(tr.group(2))] if tr else None}
+                planned = planned or [to_sec(tr.group(1)), to_sec(tr.group(2))]
+            cur = {"n": len(sections) + 1, "heading": head.strip(" :"), "visual": "", "narration": "",
+                   "planned": planned, "fx": {"v": "", "s": ""}}
             sections.append(cur)
             field = None
             continue
+        if cur is None:
+            continue
         f = FIELD.match(line)
-        if f and cur is not None:
+        fx = FX_LINE.match(line)
+        if f:
             field = "visual" if f.group(1).lower().startswith("vis") else "narration"
             cur[field] = (cur[field] + " " + f.group(2)).strip()
-        elif cur is not None and field:
+        elif fx:
+            cur["fx"] = parse_fx(fx.group(1))
+            field = None
+        elif NOTE.match(line):
+            field = None
+        elif field != "narration" and QUOTE_START.match(line):
+            # A quoted paragraph with no "Narración:" label is the narration.
+            field = "narration"
+            cur[field] = (cur[field] + " " + line.lstrip("*-• ")).strip()
+        elif field:
             cur[field] = (cur[field] + " " + line.lstrip("*-• ")).strip()
     if not sections:
         raise ValueError("No sections found. Number each section (\"1. Apertura\") and give it a "
                          "\"Visual:\" and a \"Narración:\" line.")
     for s in sections:
-        links = [(t, u) for t, u in MD_LINK.findall(s["visual"])] or [("", u) for u in URL.findall(s["visual"])]
+        # "[title](link) (0:12-0:31)": the part of that clip to use (the time range is optional).
+        links = [(m.group(1), m.group(2), m.group(3), m.group(4), m.group(5), m.group(6), m.group(7, 8, 9, 10))
+                 for m in LINK_RANGE.finditer(s["visual"])]
+        links = links or [("", m.group(1), m.group(2), m.group(3), m.group(4), m.group(5), m.group(6, 7, 8, 9))
+                          for m in BARE_RANGE.finditer(s["visual"])]
         s["clips"] = []
-        for label, url in links:
+        for label, url, ra, rb, sa, sb, crop in links:
             # Your own uploads ([name](video:<id>)), YouTube (studio links included), or any other page yt-dlp can
             # download from (TikTok, Instagram, Facebook, X...).
             up, yt = UPLOAD_ID.match(url), YT_ID.search(url)
@@ -171,9 +257,21 @@ def parse_guide(text: str) -> dict:
                 clip = {"id": "web-" + hashlib.sha1(url.encode()).hexdigest()[:16], "kind": "link", "label": label.strip(), "url": url}
             else:
                 continue
-            if clip["id"] not in [c["id"] for c in s["clips"]]:
+            rng = [to_sec(ra), to_sec(rb)] if ra and rb and to_sec(rb) > to_sec(ra) else None
+            say = sorted([int(sa), int(sb or sa)]) if sa else None
+            same = next((c for c in s["clips"] if c["id"] == clip["id"]), None)
+            if same is None:
+                clip["raws"] = [url]  # the link as written in the guide, so the page can remove it
+                clip["range"], clip["say"], clip["crop"] = rng, say, parse_crop(crop)
                 s["clips"].append(clip)
-        s["visual_text"] = re.sub(r"\s+", " ", URL.sub("", MD_LINK.sub(lambda m: m.group(1), s["visual"]))).strip()
+            else:
+                if url not in same["raws"]:
+                    same["raws"].append(url)
+                same["range"] = same["range"] or rng
+                same["say"] = same["say"] or say
+                same["crop"] = same["crop"] or parse_crop(crop)
+        vis = RANGE_AFTER.sub("", s["visual"])
+        s["visual_text"] = re.sub(r"\s+", " ", URL.sub("", MD_LINK.sub(lambda m: m.group(1), vis))).strip()
         s["pieces"] = split_narration(s["narration"])
         # "Primer caso: Paramba — El peso de no olvidar" -> on-screen title "Paramba — El peso de no olvidar"
         s["overlay"] = re.sub(r"^[^:]*caso\s*:\s*", "", s["heading"], flags=re.I) if re.search(r"[—–]| - ", s["heading"]) else ""
@@ -204,6 +302,7 @@ def split_narration(text: str) -> list[dict]:
 
 
 def clean_say(t: str) -> str:
+    t = re.sub(r"\[[^\]]*\]\s*([.,;:]?)", "", t)  # "[Agrega aquí: …]." placeholders are notes, not text to read
     return re.sub(r"\s+", " ", t).strip().strip('"“”«»').strip()
 
 
@@ -229,6 +328,196 @@ def has_audio(path: Path) -> bool:
     p = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
                        capture_output=True, text=True)
     return bool(p.stdout.strip())
+
+
+def _metadata_series(cmd: list[str], key: str) -> list[tuple[float, float]]:
+    """(time, value) pairs from an ffmpeg run that prints frame metadata (metadata=print:file=-)."""
+    p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", *cmd, "-f", "null", "-"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    out, t = [], None
+    for line in p.stdout.splitlines():
+        m = re.search(r"pts_time:(-?[\d.]+)", line)
+        if m:
+            t = float(m.group(1))
+        elif t is not None and line.startswith(key + "="):
+            try:
+                out.append((t, float(line.split("=", 1)[1])))
+            except ValueError:
+                pass
+    return out
+
+
+def clip_scores(f: Path) -> list[float]:
+    """How lively each second of a clip is (0..1): movement in the picture plus how loud it is. Cached next to the
+    clip. Used to pick the best stretches of clips that have no part chosen."""
+    st = f.stat()
+    cache, key = f.with_name(f.name + ".scores.json"), f"{st.st_size}-{int(st.st_mtime)}"
+    try:
+        c = json.loads(cache.read_text("utf-8"))
+        if c.get("key") == key:
+            return c["scores"]
+    except (OSError, ValueError, KeyError):
+        pass
+    n = max(1, int(duration(f)) + 1)
+    motion, loud = [[] for _ in range(n)], [[] for _ in range(n)]
+    for t, v in _metadata_series(["-i", str(f), "-an", "-vf", "fps=4,scale=160:-2,select='gte(scene\\,0)',metadata=print:file=-"],
+                                 "lavfi.scene_score"):
+        if 0 <= int(t) < n:
+            motion[int(t)].append(v)
+    if has_audio(f):
+        for t, v in _metadata_series(["-i", str(f), "-vn", "-af", "ebur128=metadata=1,ametadata=print:key=lavfi.r128.M:file=-"],
+                                     "lavfi.r128.M"):
+            if 0 <= int(t) < n:
+                loud[int(t)].append(v)
+    mv = [sum(x) / len(x) if x else 0.0 for x in motion]
+    # A hard cut is a single spike; cap it so steady movement counts more than one cut.
+    top = sorted(mv)[int(len(mv) * 0.9)] or 1e-6
+    mv = [min(1.0, v / top) for v in mv]
+    ld = [min(1.0, max(0.0, (sum(x) / len(x) + 45) / 30)) if x else 0.0 for x in loud]  # -45 LUFS..-15 LUFS -> 0..1
+    scores = [round(0.6 * a + 0.4 * b, 4) for a, b in zip(mv, ld)]
+    try:
+        cache.write_text(json.dumps({"key": key, "scores": scores}), "utf-8")
+    except OSError:
+        pass
+    return scores
+
+
+FACE_MODEL = ROOT / "data" / "models" / "face_detection_yunet.onnx"
+_faces = {}
+
+
+def _face_detector():
+    """A function small_bgr_frame -> [(x, y, w, h), …], or None when no face model is available: OpenCV's YuNet
+    (FACE_MODEL, if present) or its old Haar cascade (OpenCV 4)."""
+    import cv2
+    if "fn" in _faces:
+        return _faces["fn"]
+    fn = None
+    if FACE_MODEL.exists() and hasattr(cv2, "FaceDetectorYN"):
+        det = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), 0.7)
+        def fn(img, det=det):
+            det.setInputSize((img.shape[1], img.shape[0]))
+            _, found = det.detect(img)
+            return [tuple(r[:4]) for r in found] if found is not None else []
+    elif hasattr(cv2, "CascadeClassifier"):
+        cas = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        if not cas.empty():
+            def fn(img, cas=cas):
+                return list(cas.detectMultiScale(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), 1.1, 5, minSize=(16, 16)))
+    _faces["fn"] = fn
+    return fn
+
+
+def track_subject(f: Path, start: float, dur: float, out_ratio: float, area: list | None = None):
+    """Where to put a crop window of the frame's shape (out_ratio = width / height) so it follows the action in
+    f from `start` for `dur` seconds: faces first (the biggest, staying with the one already followed), else where
+    the picture moves. With `area` (a chosen ⛶ area, fractions of the picture) the window has that area's size and
+    only its position follows; a side bigger than the picture stays where it was (it can't move that way).
+    Returns (crop_w, crop_h, [(t, x, y), …]) in source pixels (x/y negative when bigger than the picture), smoothed,
+    or None."""
+    import cv2
+    import numpy as np
+    detect = _face_detector()
+    cap = cv2.VideoCapture(str(f))
+    if not cap.isOpened():
+        return None
+    W0, H0 = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    if not W0 or not H0:
+        return None
+    if area:
+        cw, ch = int(area[2] * W0) // 2 * 2, int(area[3] * H0) // 2 * 2
+        fixed_x = int(area[0] * W0) // 2 * 2 if cw >= W0 else None
+        fixed_y = int(area[1] * H0) // 2 * 2 if ch >= H0 else None
+        if fixed_x is not None and fixed_y is not None:
+            return None  # bigger than the picture both ways: nothing to move
+    else:
+        if abs(W0 / H0 - out_ratio) < 0.02:
+            return None  # same shape: nothing to follow
+        cw, ch = (H0 * out_ratio, H0) if W0 / H0 > out_ratio else (W0, W0 / out_ratio)
+        cw, ch = int(cw) // 2 * 2, int(ch) // 2 * 2
+        fixed_x = fixed_y = None
+    cap.set(cv2.CAP_PROP_POS_MSEC, start * 1000)
+    step = max(1, round(fps / 6))  # look 6 times a second
+    k, prev, pts, last = 0, None, [], (W0 / 2, H0 * 0.4)
+    scale = 320 / max(W0, H0)
+    while k / fps <= dur + 0.2:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if k % step == 0:
+            small = cv2.resize(frame, (max(1, int(W0 * scale)), max(1, int(H0 * scale))))
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            faces = detect(small) if detect else []
+            target = None
+            if not len(faces):
+                # No face model (or no face found): the top of the people. The first rows from the top with enough
+                # skin color are usually foreheads; the window is put so they sit near its top, keeping heads in.
+                ycc = cv2.cvtColor(small, cv2.COLOR_BGR2YCrCb)
+                skin = cv2.inRange(ycc, (40, 138, 80), (240, 175, 128))
+                skin = cv2.morphologyEx(skin, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+                rows = (skin > 0).mean(axis=1)
+                band = np.convolve(rows, np.ones(3) / 3, "same")
+                top = next((i for i, v in enumerate(band) if v > 0.06), None)
+                if top is not None:
+                    hy = top / scale
+                    cols = (skin[top:top + max(3, int(skin.shape[0] * 0.15))] > 0).mean(axis=0)
+                    hx = (np.arange(len(cols)) * cols).sum() / cols.sum() / scale if cols.sum() else W0 / 2
+                    target = (hx, hy - ch * 0.25 + ch / 2)  # the first skin ~25% below the window's top: room for hair
+            if len(faces):
+                # The biggest face, but stay with the one followed so far when it's still there. Faces of similar
+                # size next to it are framed together when they fit (two people talking).
+                cand = sorted(faces, key=lambda r: -r[2] * r[3])
+                near = [r for r in cand if abs((r[0] + r[2] / 2) / scale - last[0]) < cw * 0.25]
+                main = (near or cand)[0]
+                group = [r for r in cand if r[2] >= main[2] * 0.5]
+                x0 = min(r[0] for r in group) / scale; x1 = max(r[0] + r[2] for r in group) / scale
+                y0 = min(r[1] for r in group) / scale; y1 = max(r[1] + r[3] for r in group) / scale
+                if x1 - x0 > cw * 0.95 or y1 - y0 > ch * 0.95:  # they don't fit together: just the main one
+                    x0, y0 = main[0] / scale, main[1] / scale
+                    x1, y1 = x0 + main[2] / scale, y0 + main[3] / scale
+                top = y0 - ch * 0.15                      # some room above the head
+                if top + ch < y1 + ch * 0.05:             # but the chin must fit
+                    top = y1 + ch * 0.05 - ch
+                target = ((x0 + x1) / 2, top + ch / 2)
+            elif prev is not None:
+                diff = cv2.absdiff(gray, prev)
+                _, mask = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+                m = cv2.moments(mask)
+                if m["m00"] > 255 * gray.size * 0.01:  # enough of the picture moved
+                    target = (m["m10"] / m["m00"] / scale, m["m01"] / m["m00"] / scale)
+            prev = gray
+            if target is not None:
+                last = target
+            pts.append((k / fps, last))
+        k += 1
+    cap.release()
+    if not pts:
+        return None
+    # Smooth: a moving average, then follow it at a capped speed so the window glides instead of jumping.
+    xs = np.array([p[1][0] for p in pts]); ys = np.array([p[1][1] for p in pts])
+    if len(xs) >= 5:
+        kern = np.ones(5) / 5
+        xs = np.convolve(np.pad(xs, 2, mode="edge"), kern, "valid"); ys = np.convolve(np.pad(ys, 2, mode="edge"), kern, "valid")
+    out, cx, cy = [], xs[0], ys[0]
+    max_step = max(W0, H0) * 0.35 / 6  # at most 35% of the picture per second
+    for (t, _), tx, ty in zip(pts, xs, ys):
+        cx += max(-max_step, min(max_step, tx - cx)); cy += max(-max_step, min(max_step, ty - cy))
+        x = fixed_x if fixed_x is not None else int(max(0, min(W0 - cw, cx - cw / 2))) // 2 * 2
+        y = fixed_y if fixed_y is not None else int(max(0, min(H0 - ch, cy - ch / 2))) // 2 * 2
+        out.append((round(t, 3), x, y))
+    return cw, ch, out, int(W0), int(H0)
+
+
+def best_starts(scores: list[float], lo: float, hi: float, seg: float, step: float | None = None) -> list[float]:
+    """Start times of seg-long stretches inside lo..hi, best first (by the average liveliness they cover)."""
+    step = step or seg
+    starts = list(frange(lo, max(lo, hi - seg), step)) or [lo]
+    def sc(t):
+        a, b = int(t), max(int(t) + 1, int(t + seg + 0.999))
+        part = scores[a:b] or [0.0]
+        return sum(part) / len(part)
+    return sorted(starts, key=lambda t: -sc(t))
 
 
 def check(job: dict):
@@ -349,6 +638,38 @@ def fallback_queries(section: dict) -> list[str]:
     return [" ".join(p.split()[:5]) for p in parts[:5]] or ["city night", "concert crowd"]
 
 
+_clip_locks: dict[str, threading.Lock] = {}
+
+
+def download_clip(clip: dict) -> Path:
+    """A linked clip (YouTube, TikTok…) downloaded once to the cache; the render and the clip picker share it."""
+    dst = CACHE / f"{clip['id']}.mp4"
+    with _clip_locks.setdefault(clip["id"], threading.Lock()):
+        if dst.exists() and dst.stat().st_size > 0:
+            return dst
+        CACHE.mkdir(parents=True, exist_ok=True)
+        tmp = CACHE / f"{clip['id']}.part.mp4"
+        cmd = [*fetch.ytdlp_base(), *fetch.format_args(1080), "--merge-output-format", "mp4", "--force-overwrites",
+               "-o", str(tmp), clip["url"]]
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if p.returncode or not tmp.exists():
+            raise RuntimeError(f"Couldn't download {clip.get('label') or clip['url']}: {fetch.ytdlp_error(p.stderr)}")
+        tmp.replace(dst)
+        return dst
+
+
+def clip_from_link(url: str) -> dict | None:
+    """The clip a link in a Visual line stands for (same ids as parse_guide)."""
+    up, yt = UPLOAD_ID.match(url), YT_ID.search(url)
+    if up:
+        return {"id": "up-" + up.group(1), "kind": "upload", "label": "", "url": url}
+    if yt:
+        return {"id": "yt-" + yt.group(1), "kind": "link", "label": "", "url": f"https://www.youtube.com/watch?v={yt.group(1)}"}
+    if url.startswith("http"):
+        return {"id": "web-" + hashlib.sha1(url.encode()).hexdigest()[:16], "kind": "link", "label": "", "url": url}
+    return None
+
+
 # ---------- the job ----------
 
 class Builder:
@@ -379,6 +700,70 @@ class Builder:
                 f"crop={W // 4}:{H // 4},boxblur=8:2,scale={W}:{H},eq=brightness=-0.08[bg];"
                 f"[fga]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[{out}]")
 
+    def clip_fc(self, crop: list | None = None) -> str:
+        """Your clips in the frame: "fill" crops them to the full width and height; "fit" shows all of the clip over
+        a blurred copy of itself (vertical clips get blurred sides). A chosen area ("encuadre", picked in the frame's
+        shape) is cut out first and fills the frame."""
+        if crop:
+            x, y, w, h = crop
+            ix, iy = max(0.0, x), max(0.0, y)
+            iw, ih = min(1.0, x + w) - ix, min(1.0, y + h) - iy  # the part of the box that is on the picture
+            if ix - x < 0.002 and iy - y < 0.002 and iw > w - 0.004 and ih > h - 0.004:
+                cut = f"crop=w=trunc(iw*{w}/2)*2:h=trunc(ih*{h}/2)*2:x=iw*{x}:y=ih*{y}"
+                return f"[0:v]{cut},{self.fill_vf()}[v]"
+            # Zoomed out past the picture: the picture part, scaled and placed where it falls in the box, over a
+            # blurred copy of the clip filling the rest.
+            W, H = self.W, self.H
+            fw, fh = max(2, round(iw / w * W / 2) * 2), max(2, round(ih / h * H / 2) * 2)
+            ox, oy = round((ix - x) / w * W), round((iy - y) / h * H)
+            return (f"[0:v]fps={FPS},split=2[bga][fga];[bga]scale={W // 4}:{H // 4}:force_original_aspect_ratio=increase,"
+                    f"crop={W // 4}:{H // 4},boxblur=8:2,scale={W}:{H},eq=brightness=-0.08[bg];"
+                    f"[fga]crop=w=trunc(iw*{iw:.4f}/2)*2:h=trunc(ih*{ih:.4f}/2)*2:x=iw*{ix:.4f}:y=ih*{iy:.4f},"
+                    f"scale={fw}:{fh}[fg];[bg][fg]overlay={ox}:{oy},setsar=1,format=yuv420p[v]")
+        return f"[0:v]{self.fill_vf()}[v]" if self.o.get("fit", "fill") == "fill" else self.fit_fc()
+
+    def shot_fc(self, src: Path, start: float, dur: float, crop: list | None) -> str:
+        """The filter that puts a clip in the frame: a chosen area, or (setting "follow") a window that follows
+        the faces / action, or the plain fill / fit."""
+        if self.o.get("fit") == "follow":
+            try:
+                tr = track_subject(src, start, dur, self.W / self.H, crop)
+            except Exception:
+                tr = None
+            if tr:
+                cw, ch, pts, W0, H0 = tr
+                # The part of the window on the picture (all of it, unless the chosen area is bigger than the
+                # picture on one side: then that side is the whole picture and the rest is blurred fill).
+                over_x, over_y = cw > W0, ch > H0
+                iw, ih = (W0 if over_x else cw), (H0 if over_y else ch)
+                # One position per frame, between the tracked points, sent to crop as commands.
+                lines, j = [], 0
+                for i in range(int(dur * FPS) + 2):
+                    t = i / FPS
+                    while j + 1 < len(pts) and pts[j + 1][0] <= t:
+                        j += 1
+                    a, b = pts[j], pts[min(j + 1, len(pts) - 1)]
+                    u = 0 if b[0] <= a[0] else min(1, max(0, (t - a[0]) / (b[0] - a[0])))
+                    x, y = round(a[1] + (b[1] - a[1]) * u) // 2 * 2, round(a[2] + (b[2] - a[2]) * u) // 2 * 2
+                    lines.append(f"{t:.3f} crop x {0 if over_x else x}, crop y {0 if over_y else y};")
+                self.cmd_no = getattr(self, "cmd_no", 0) + 1
+                name = f"follow{self.cmd_no:04d}.txt"
+                (self.work / name).write_text("\n".join(lines) + "\n", "utf-8")
+                x0, y0 = (0 if over_x else pts[0][1]), (0 if over_y else pts[0][2])
+                cut = f"sendcmd=f={name},crop=w={iw}:h={ih}:x={x0}:y={y0}"
+                if not over_x and not over_y:
+                    return f"[0:v]{cut},scale={self.W}:{self.H},setsar=1,fps={FPS},format=yuv420p[v]"
+                W, H = self.W, self.H
+                k = W / cw  # source pixels -> frame pixels
+                fw, fh = max(2, round(iw * k / 2) * 2), max(2, round(ih * k / 2) * 2)
+                ox, oy = (round(-pts[0][1] * k) if over_x else 0), (round(-pts[0][2] * k) if over_y else 0)
+                return (f"[0:v]fps={FPS},split=2[bga][fga];[bga]scale={W // 4}:{H // 4}:force_original_aspect_ratio=increase,"
+                        f"crop={W // 4}:{H // 4},boxblur=8:2,scale={W}:{H},eq=brightness=-0.08[bg];"
+                        f"[fga]{cut},scale={fw}:{fh}[fg];[bg][fg]overlay={ox}:{oy},setsar=1,format=yuv420p[v]")
+        if not crop and self.o.get("fit") == "follow":
+            return f"[0:v]{self.fill_vf()}[v]"
+        return self.clip_fc(crop)
+
     def enc(self) -> list[str]:
         return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-r", str(FPS)]
 
@@ -392,17 +777,7 @@ class Builder:
         return self.download_link(clip)
 
     def download_link(self, clip: dict) -> Path:
-        dst = CACHE / f"{clip['id']}.mp4"
-        if dst.exists() and dst.stat().st_size > 0:
-            return dst
-        tmp = CACHE / f"{clip['id']}.part.mp4"
-        cmd = [*fetch.ytdlp_base(), *fetch.format_args(1080), "--merge-output-format", "mp4", "--force-overwrites",
-               "-o", str(tmp), clip["url"]]
-        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if p.returncode or not tmp.exists():
-            raise RuntimeError(f"Couldn't download {clip['label'] or clip['url']}: {fetch.ytdlp_error(p.stderr)}")
-        tmp.replace(dst)
-        return dst
+        return download_clip(clip)
 
     def stock_pool(self, queries: list[str], spanish: bool) -> list[dict]:
         key = stock.pexels_key()
@@ -453,35 +828,116 @@ class Builder:
             self.credits.append({"by": by, "url": v.get("url", "")})
         return out
 
-    def render_clip_shot(self, src: Path, start: float, dur: float) -> Path:
+    def render_clip_shot(self, src: Path, start: float, dur: float, length: float = 0, crop: list | None = None) -> Path:
         out = self.work / f"shot{self.shot_no:04d}.mp4"
         self.shot_no += 1
-        ffmpeg(["-ss", f"{start:.3f}", "-i", str(src), "-t", f"{dur:.3f}", "-an", "-filter_complex", self.fit_fc(),
-                "-map", "[v]", *self.enc(), str(out)])
+        loop = ["-stream_loop", "-1"] if length and start + dur > length else []  # a clip shorter than the shot repeats
+        fc = self.shot_fc(src, start, min(dur, max(0.5, (length or dur) - start)) if loop else dur, crop)
+        ffmpeg([*loop, "-ss", f"{start:.3f}", "-i", str(src), "-t", f"{dur:.3f}", "-an", "-filter_complex", fc,
+                "-map", "[v]", *self.enc(), str(out)], cwd=self.work)
         return out
 
     def broll(self, dur: float, sec: dict, pool: list, clip_srcs: list, shot_len: float) -> list[Path]:
-        """Shots that fill `dur` seconds: stock footage, alternating with muted shots of the section's clips."""
+        """Shots that fill `dur` seconds. A section with its own clips uses only those (muted, taking turns, moving
+        through each clip so the same stretch isn't repeated); a section without clips uses stock footage."""
         n = max(1, round(dur / shot_len))
         lens = [dur / n] * n
         shots = []
-        for i, d in enumerate(lens):
-            long_enough = [c for c in clip_srcs if c[1] >= d + 0.8]
-            if long_enough and (i % 2 == 1 or not pool):
-                src, length, avoid = long_enough[(i // 2) % len(long_enough)]
-                # A stretch of the clip away from the part played with sound, so it isn't seen twice in a row.
-                spots = [t for t in frange(0.3, length - d - 0.3, d) if not (avoid and avoid[0] - d < t < avoid[1])]
-                spots = spots or list(frange(0.3, length - d - 0.3, d)) or [0.0]
-                shots.append(self.render_clip_shot(src, random.choice(spots), d))
-            else:
-                if not pool:
-                    pool.extend(self.stock_pool(["city night", "people walking", "sunset"], False))
-                fresh = [v for v in pool if v["id"] not in self.used_stock] or pool
-                v = fresh[0]
-                self.used_stock.add(v["id"])
-                pool.remove(v)
-                pool.append(v)  # reused only once every clip in the pool has been seen
-                shots.append(self.render_stock_shot(v, d))
+        if clip_srcs:
+            # Each clip: {"f", "len", "lo", "hi", "avoid", "k"}: only its lo..hi window (the time range set on the
+            # clip, or all of it) is used, away from the part played with sound, stepping forward each shot.
+            # A clip never plays past the end of its part: when its part is shorter than the shot, the next clip
+            # carries on for the rest of the shot.
+            for d in lens:
+                left = d
+                while left > 0.04:
+                    c = clip_srcs[(sec.setdefault("_turn", 0)) % len(clip_srcs)]
+                    sec["_turn"] += 1
+                    lo, hi, avoid = c["lo"], c["hi"], c["avoid"]
+                    micro = self.o.get("micro") or 0  # micro cuts: no piece of a clip longer than this
+                    seg = min(left, hi - lo, micro or left)
+                    if left - seg < 0.4:  # don't leave a sliver for the next clip; this one takes it (repeating)
+                        seg = left if hi - lo >= left - 0.4 else seg
+                    edge = 0.3 if hi - lo > seg + 0.6 else 0.0
+                    spots = [t for t in frange(lo + edge, hi - seg - edge, seg) if not (avoid and avoid[0] - seg < t < avoid[1])]
+                    spots = spots or list(frange(lo + edge, hi - seg - edge, seg)) or [lo]
+                    if not c["picked"]:  # no part chosen: its liveliest stretches first
+                        rank = self.ranked(c, lo + edge, hi - edge, seg)
+                        spots = sorted(spots, key=lambda t: rank.index(t) if t in rank else len(rank))
+                    start = spots[c["k"] % len(spots)]
+                    c["k"] += 1
+                    if start + seg > hi + 0.05:  # only when the sliver above made it longer than the part
+                        shots += self.clip_run(c, seg)
+                    else:
+                        shots.append(self.render_clip_shot(c["f"], start, seg, c["len"], c.get("crop")))
+                    left -= seg
+            return shots
+        for d in lens:
+            if not pool:
+                pool.extend(self.stock_pool(["city night", "people walking", "sunset"], False))
+            fresh = [v for v in pool if v["id"] not in self.used_stock] or pool
+            v = fresh[0]
+            self.used_stock.add(v["id"])
+            pool.remove(v)
+            pool.append(v)  # reused only once every clip in the pool has been seen
+            shots.append(self.render_stock_shot(v, d))
+        return shots
+
+    def clip_run(self, c: dict, length: float) -> list[Path]:
+        """`length` seconds of one clip played straight from the start of its part (repeating the part if short)."""
+        win, out, left = max(0.5, c["hi"] - c["lo"]), [], length
+        micro = self.o.get("micro") or 0
+        if micro and length > micro + 0.4 and not c["picked"] and win > micro * 2:
+            # Micro cuts: the clip's liveliest micro-long moments (no part chosen), shown in the clip's order.
+            n = -(-int(length * 1000) // int(micro * 1000))  # pieces needed (rounded up)
+            best = self.ranked(c, c["lo"], c["hi"], micro)[:n]
+            best = sorted(best) * (-(-n // max(1, len(best))))  # a short clip repeats its moments
+            for i in range(n):
+                d = min(micro, left)
+                if left - d < 0.4:
+                    d = left
+                out.append(self.render_clip_shot(c["f"], best[i], d, c["len"], c.get("crop")))
+                left -= d
+                if left <= 0.01:
+                    break
+            return out
+        start = c["lo"]
+        if not c["picked"] and win > length + 0.5:  # no part chosen: the liveliest stretch that long
+            start = self.ranked(c, c["lo"], c["hi"], length, 0.5)[0]
+            win = c["hi"] - start
+        while left > 0.01:
+            d = min(left, win)
+            out.append(self.render_clip_shot(c["f"], start, d, c["len"], c.get("crop")))
+            left -= d
+        return out
+
+    def ranked(self, c: dict, lo: float, hi: float, seg: float, step: float | None = None) -> list[float]:
+        """Start times of seg-long stretches of clip c between lo and hi, liveliest first."""
+        if c.get("scores") is None:
+            try:
+                c["scores"] = clip_scores(c["f"])
+            except Exception:
+                c["scores"] = []
+        return best_starts(c["scores"], lo, hi, seg, step) if c["scores"] else list(frange(lo, max(lo, hi - seg), step or seg)) or [lo]
+
+    def broll_timed(self, dur: float, sec: dict, pool: list, srcs: list, shot_len: float,
+                    segs: list[tuple[float, float, dict]]) -> list[Path]:
+        """Shots for one narration line where some clips are tied to sentences ("frases 2-3"): each of those plays
+        while its sentences are spoken; the rest of the line is filled by the other clips taking turns."""
+        if not segs:
+            return self.broll(dur, sec, pool, srcs, shot_len)
+        free = [c for c in srcs if not c.get("say")] or srcs
+        shots, t = [], 0.0
+        for a, b, c in sorted(segs, key=lambda x: x[0]):
+            a = max(a, t)  # two clips on the same sentence: the first one keeps it
+            if b - a < 0.3:
+                continue
+            if a - t > 0.05:
+                shots += self.broll(a - t, sec, pool, free, shot_len)
+            shots += self.clip_run(c, b - a)
+            t = b
+        if dur - t > 0.05:
+            shots += self.broll(dur - t, sec, pool, free, shot_len)
         return shots
 
     # --- pieces: one narration line or one clip insert, each a finished video with sound ---
@@ -508,13 +964,68 @@ class Builder:
                 *(self.enc() if vf else ["-c:v", "copy"]), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", out.name], cwd=self.work)
         return out
 
-    def insert_piece(self, idx: int, src: Path, start: float, dur: float) -> Path:
+    def insert_piece(self, idx: int, src: Path, start: float, dur: float, crop: list | None = None) -> Path:
         out = self.work / f"p{idx:03d}.mp4"
         a = "[0:a]aresample=48000,aformat=channel_layouts=stereo,afade=t=in:d=0.15,afade=t=out:st={0}:d=0.4,apad[a]".format(max(0, dur - 0.4))
         if not has_audio(src):
             a = "anullsrc=r=48000:cl=stereo[a]"
-        ffmpeg(["-ss", f"{start:.3f}", "-i", str(src), "-t", f"{dur:.3f}", "-filter_complex", self.fit_fc() + ";" + a,
-                "-map", "[v]", "-map", "[a]", "-t", f"{dur:.3f}", *self.enc(), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", str(out)])
+        ffmpeg(["-ss", f"{start:.3f}", "-i", str(src), "-t", f"{dur:.3f}", "-filter_complex", self.shot_fc(src, start, dur, crop) + ";" + a,
+                "-map", "[v]", "-map", "[a]", "-t", f"{dur:.3f}", *self.enc(), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", str(out)],
+               cwd=self.work)
+        return out
+
+    # --- effects: a visual hit and a sound at the start of a section (synthesized, no files needed) ---
+    SFX = {
+        "boom": "aevalsrc='0.9*sin(2*PI*(70-30*t)*t)*exp(-4*t)':d=1.2",
+        "hit": "aevalsrc='(0.6*sin(2*PI*110*t)+0.45*(random(0)*2-1))*exp(-14*t)':d=0.5",
+        "whoosh": "anoisesrc=d=0.7:c=pink:a=0.8,bandpass=f=900:w=1400,volume='sin(PI*t/0.7)':eval=frame",
+        "riser": "aevalsrc='0.45*sin(2*PI*(200*t+350*t*t))*(t/1.3)':d=1.3",
+        "ding": "aevalsrc='0.5*sin(2*PI*1320*t)*exp(-5*t)+0.2*sin(2*PI*2640*t)*exp(-7*t)':d=1.2",
+        "pop": "aevalsrc='0.8*sin(2*PI*(900-3000*t)*t)*exp(-40*t)':d=0.15",
+        "glitch": "aevalsrc='0.35*sin(2*PI*180*t)/abs(sin(2*PI*180*t)+0.0001)*lt(mod(t\\,0.08)\\,0.04)':d=0.4",
+    }
+
+    def fx_vf(self, v: str, every: float = 0, dur: float = 0) -> str:
+        """The visual effect at the start of the piece, or every `every` seconds through it."""
+        W, H = self.W, self.H
+        T = f"mod(t\\,{every})" if every else "t"  # the effect's own clock: restarts every `every` seconds
+        if v == "flash":
+            if every:  # a white layer whose opacity jumps up every `every` s and fades (computed small, then scaled)
+                return (f"color=white:s=16x16:r={FPS}:d={dur + 1:.2f},format=rgba,"
+                        f"geq=r=255:g=255:b=255:a='255*max(0\\,1-mod(T\\,{every})/0.35)',scale={W}:{H}[w];"
+                        f"[0:v][w]overlay=shortest=1[v0]")
+            return (f"color=white:s={W}x{H}:r={FPS}:d=0.35,format=rgba,fade=t=out:st=0:d=0.35:alpha=1[w];"
+                    f"[0:v][w]overlay=eof_action=pass[v0]")
+        return {
+            "punch": f"[0:v]scale=w='{W}*(1+0.18*max(0\\,1-{T}/0.5)^3)':h=-2:eval=frame,crop={W}:{H}[v0]",
+            "push": f"[0:v]scale=w='{W}*(1+0.08*min({T}\\,3)/3)':h=-2:eval=frame,crop={W}:{H}[v0]",
+            "shake": f"[0:v]scale={W * 108 // 100}:-2,crop={W}:{H}:x='(iw-ow)/2+(iw-ow)/2*sin(t*70)*max(0\\,1-{T}/0.5)'"
+                     f":y='(ih-oh)/2+(ih-oh)/2*cos(t*53)*max(0\\,1-{T}/0.5)'[v0]",
+            "glitch": f"[0:v]rgbashift=rh=18:bh=-18:gv=6:enable='lt({T}\\,0.4)',noise=alls=45:allf=t:enable='lt({T}\\,0.4)'[v0]",
+        }[v]
+
+    def apply_fx(self, piece: Path, fx: dict, every: float = 0) -> Path:
+        """The section's effect on a piece: once at its start, or every `every` seconds through it."""
+        v, s = fx.get("v") or "", fx.get("s") or ""
+        if v not in FX_VIS:
+            v = ""
+        if s not in self.SFX:
+            s = ""
+        if not v and not s:
+            return piece
+        out = piece.with_name(piece.stem + "-fx.mp4")
+        dur = duration(piece)
+        fc, args = [], ["-i", piece.name]
+        if v:
+            fc.append(self.fx_vf(v, every, dur) + f";[v0]setsar=1,format=yuv420p[v]")
+        if s:
+            args += ["-f", "lavfi", "-i", self.SFX[s]]
+            loop = (f",apad=whole_dur={every},atrim=0:{every},aloop=loop=-1:size={int(every * 48000)}" if every else "")
+            fc.append(f"[1:a]aresample=48000,aformat=channel_layouts=stereo,volume=0.8{loop}[f];"
+                      "[0:a][f]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]")
+        ffmpeg([*args, "-filter_complex", ";".join(fc), "-map", "[v]" if v else "0:v", "-map", "[a]" if s else "0:a",
+                *(self.enc() if v else ["-c:v", "copy"]), "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+                "-t", f"{dur:.3f}", out.name], cwd=self.work)
         return out
 
     # --- the whole run ---
@@ -544,8 +1055,11 @@ class Builder:
                 continue
             files[cid] = self.source(c)
 
-        # 3. Stock search words per section.
+        # 3. Stock search words per section (a section with its own clips uses only those, no stock).
         for k, s in enumerate(secs):
+            if s["clips"]:
+                s["queries"], s["spanish"] = [], False
+                continue
             self.step("planning", 0.30 + 0.05 * k / len(secs), s["heading"])
             q = ollama_queries(s, self.orientation) if o.get("ai", True) else []
             s["queries"], s["spanish"] = (q, False) if q else (fallback_queries(s), True)
@@ -555,20 +1069,34 @@ class Builder:
         total = sum(len(s["pieces"]) for s in secs)
         done = 0
         for si, s in enumerate(secs):
-            pool = self.stock_pool(s["queries"], s["spanish"])
+            pool = self.stock_pool(s["queries"], s["spanish"]) if not s["clips"] else []
             if not pool and not s["clips"]:
                 pool = self.stock_pool(["city night", "people walking", "sunset"], False)
             srcs = []
             for c in s["clips"]:
                 f = files[c["id"]]
-                srcs.append([f, duration(f), None])
-            shot_len = o["shot"] * (0.5 if si == 0 else 1.0)  # quick cuts for the opening
+                length = duration(f)
+                lo, hi = c.get("range") or (0.0, length)
+                lo = max(0.0, min(lo, length - 1))
+                hi = max(lo + 1, min(hi, length))
+                srcs.append({"f": f, "len": length, "lo": lo, "hi": hi, "avoid": None, "k": 0, "say": c.get("say"),
+                             "crop": c.get("crop"), "picked": bool(c.get("range")), "scores": None})
+            shot_len = o["shot"] * (0.5 if si == 0 and s["n"] == 1 else 1.0)  # quick cuts for the opening
             sec_start, overlay_left = t, s["overlay"]
             ins_n = 0
+            sent_n = 0  # sentences of the section's narration already spoken (for clips tied to "frases N-M")
             for pi, p in enumerate(s["pieces"]):
                 self.step("rendering", 0.35 + 0.55 * done / total, f"{s['heading']} · part {pi + 1} of {len(s['pieces'])}")
                 if p["type"] == "say":
-                    shots = self.broll(p["dur"], s, pool, srcs, shot_len)
+                    spans = sentence_spans(p["words"], p["dur"])
+                    first, last = sent_n + 1, sent_n + len(spans)
+                    segs = []
+                    for c in srcs:
+                        if c.get("say") and c["say"][1] >= first and c["say"][0] <= last:
+                            a, b = max(c["say"][0], first), min(c["say"][1], last)
+                            segs.append((spans[a - first][0], spans[b - first][1], c))
+                    sent_n = last
+                    shots = self.broll_timed(p["dur"], s, pool, srcs, shot_len, segs)
                     path = self.say_piece(len(pieces), p["audio"], p["dur"], shots, overlay_left)
                     overlay_left = ""
                     for w in p["words"]:
@@ -576,18 +1104,28 @@ class Builder:
                     t += p["dur"]
                 elif srcs:
                     k = p["clip"] if p["clip"] is not None and p["clip"] < len(srcs) else ins_n % len(srcs)
-                    f, length, _ = srcs[k]
+                    c = srcs[k]
+                    f, length = c["f"], c["len"]
                     ins_n += 1
-                    a, b = p["range"] or ((0.0, length) if p["whole"] else (0.0, min(length, o["insert"])))
+                    # A range in the narration is in the clip's own time; otherwise the clip's window
+                    # (all of it with "completo", else its first `insert` seconds).
+                    a, b = p["range"] or ((c["lo"], c["hi"]) if p["whole"] else (c["lo"], min(c["hi"], c["lo"] + o["insert"])))
+                    if not p["range"] and not p["whole"] and not c["picked"] and c["hi"] - c["lo"] > o["insert"] + 1:
+                        a = self.ranked(c, c["lo"], c["hi"], o["insert"], 1.0)[0]  # no part chosen: its liveliest stretch
+                        b = a + o["insert"]
                     a, b = max(0.0, min(a, length - 1)), max(a + 1, min(b, length))
-                    srcs[k][2] = (a, b)
-                    path = self.insert_piece(len(pieces), f, a, b - a)
+                    c["avoid"] = (a, b)
+                    path = self.insert_piece(len(pieces), f, a, b - a, c.get("crop"))
                     t += b - a
                 else:  # a stage direction with no clip linked: a short pause on B-roll
                     sil = self.work / f"sil{len(pieces)}.wav"
                     ffmpeg(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "1.2", str(sil)])
                     path = self.say_piece(len(pieces), sil, 1.2, self.broll(1.2, s, pool, srcs, shot_len), "")
                     t += 1.2
+                if s.get("fx") and s["fx"].get("every") and p["type"] == "say":
+                    path = self.apply_fx(path, s["fx"], s["fx"]["every"])  # repeated through the narration
+                elif pi == 0 and s.get("fx"):
+                    path = self.apply_fx(path, s["fx"])
                 pieces.append(path)
                 done += 1
             timeline.append({"n": s["n"], "title": s["heading"], "start": round(sec_start, 2), "end": round(t, 2),
@@ -655,6 +1193,10 @@ def options(body: dict) -> dict:
                 "shot": max(2.0, min(10.0, float(body.get("shot") or 4.5))),
                 "insert": max(4.0, min(120.0, float(body.get("insert") or 20))),
                 "music": str(body.get("music") or ""), "music_volume": max(0.0, min(1.0, float(body.get("music_volume") or 0.10))),
+                "fit": body.get("fit") if body.get("fit") in ("fit", "follow") else "fill",
+                "fitv": 2,  # saved after "follow faces" existed (older "fill" choices are read as "follow")
+                # Micro cuts: no piece of one of your clips lasts longer than this (0 = off). Default 3 s.
+                "micro": max(0.0, min(10.0, float(body.get("micro") if body.get("micro") is not None else 3))),
                 "ai": body.get("ai", True) is not False}
     except (TypeError, ValueError):
         raise HTTPException(400, "rate, shot, insert and music_volume must be numbers")
@@ -692,9 +1234,12 @@ def summary(guide: dict) -> dict:
     """What the page shows before rendering: the sections it found, the clips and the inserts."""
     words = sum(len(p["text"].split()) for s in guide["sections"] for p in s["pieces"] if p["type"] == "say")
     return {"title": guide["title"], "words": words, "est_seconds": round(words / 2.5),
-            "sections": [{"n": s["n"], "heading": s["heading"], "overlay": s["overlay"], "planned": s["planned"],
+            "fx": {"visual": FX_VIS, "sound": FX_SND},
+            "sections": [{"n": s["n"], "heading": s["heading"], "overlay": s["overlay"], "planned": s["planned"], "fx": s["fx"],
                           "clips": [{"id": c["id"], "label": c["label"], "kind": c["kind"],
-                                     "missing": c["kind"] == "upload" and not any(CACHE.glob(c["id"] + ".*"))} for c in s["clips"]],
+                                     "missing": c["kind"] == "upload" and not any(CACHE.glob(c["id"] + ".*")),
+                                     "raws": c["raws"], "range": c.get("range"), "say": c.get("say"),
+                                     "crop": c.get("crop")} for c in s["clips"]],
                           "inserts": sum(p["type"] == "insert" for p in s["pieces"]),
                           "words": sum(len(p["text"].split()) for p in s["pieces"] if p["type"] == "say")}
                          for s in guide["sections"]]}
@@ -739,12 +1284,95 @@ def start_guide(body: dict):
     return {"job": job_id, "notification": nid, **summary(guide)}
 
 
+# Section previews made on this run of the server, so a newer preview of a section can delete the old file.
+_previews: set[str] = set()
+
+
+@router.post("/api/guide/preview")
+def preview_section(body: dict):
+    """Makes one section on its own (voice, clips, stock, effect, music) to check it before the whole video.
+    Poll /api/guide/{job}; the finished file plays from /api/media/{media}. `replace` deletes an older preview."""
+    try:
+        guide = parse_guide(str(body.get("text") or "")[:60000])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    n = int(body.get("n") or 0)
+    sec = next((s for s in guide["sections"] if s["n"] == n), None)
+    if not sec:
+        raise HTTPException(404, f"No section {n} in the guide.")
+    if not sec["clips"] and not stock.pexels_key():
+        raise HTTPException(400, "Add your free Pexels API key first (Stock video dialog), or add your own clips to this section.")
+    old = str(body.get("replace") or "")
+    if old in _previews:
+        _previews.discard(old)
+        for ext in (".mp4", ".srt"):
+            (fetch.DOWNLOADS / f"{old}{ext}").unlink(missing_ok=True)
+    job_id = uuid.uuid4().hex
+    guide_jobs[job_id] = {"status": "voice", "progress": 0.0, "preview": True}
+    one = {"title": f"{guide['title']} · {n}. {sec['heading']}", "sections": [sec]}
+    threading.Thread(target=run_preview, args=(job_id, one, options(body)), daemon=True).start()
+    return {"job": job_id}
+
+
+def run_preview(job_id: str, guide: dict, opts: dict):
+    job = guide_jobs[job_id]
+    b = Builder(job, guide, opts)
+    try:
+        r = b.run()
+        _previews.add(r["media"])
+        job.update(status="done", progress=1.0, result=r)
+    except Exception as e:
+        cancelled = str(e) == "cancelled"
+        job.update(status="error", error="Cancelled." if cancelled else str(e), cancelled=cancelled)
+    finally:
+        shutil.rmtree(b.work, ignore_errors=True)
+
+
+@router.post("/api/guides/draft")
+def save_draft(body: dict):
+    """Saves the guide and its settings without making the video. Send `id` to update a draft (or a guide's text)
+    already in the list; a draft is made later with "Create the video" (which replaces it in place)."""
+    text = str(body.get("text") or "")[:60000]
+    if not text.strip():
+        raise HTTPException(400, "The guide is empty.")
+    try:
+        g = parse_guide(text)
+        title, n = g["title"], len(g["sections"])
+    except ValueError:  # a draft may be unfinished
+        m = re.search(r"^\s*(?:t[ií]tulo(?: de trabajo)?|title)\s*:\s*(.+)$", text, re.I | re.M)
+        title, n = (m.group(1).strip().strip('"“”«»').strip() if m else "") or "Untitled draft", 0
+    gid, opts, now = str(body.get("id") or ""), options(body), time.time()
+    _guides_seed()
+    with _guides_lock:
+        items = _guides_load()
+        # The guide being edited, or else the one in the list with the same title: saving overwrites it, so one
+        # video has one entry. A made video stays playable (as its previous version) until the new one is made.
+        it = next((x for x in items if x["id"] == gid), None) if gid else None
+        if it is None:
+            it = next((x for x in items if (x.get("title") or "").strip().lower() == title.strip().lower()
+                       and x.get("status") != "running"), None)
+        if it is not None and it.get("status") == "running":
+            raise HTTPException(409, "That video is still being made. Save the draft when it's done.")
+        if it is None:
+            it = {"id": uuid.uuid4().hex, "created": now}
+            items.insert(0, it)
+        elif it.get("result"):
+            it["prev_result"] = it.pop("result")
+        it.pop("error", None)
+        it.update(title=title, status="draft", format=opts["format"], sections=n, text=text, options=opts, edited=now)
+        _guides_save(items)
+    return {"id": it["id"], "title": title, "sections": n}
+
+
 @router.post("/api/guide/video")
 async def add_video(request: Request, name: str = ""):
-    """Your own footage for a guide. The body is the raw video file; the page links it as [name](video:<id>)."""
+    """Your own footage for a guide. The body is the raw video (or photo) file; the page links it as [name](video:<id>).
+    A photo is turned into a short clip with a slow zoom, so it's used like any other clip."""
     ext = Path(name).suffix.lower()
+    if ext in IMAGE_EXT:
+        return await add_photo(request, name, ext)
     if ext not in VIDEO_EXT:
-        raise HTTPException(400, "Use a video file: MP4, MOV, MKV, WEBM, AVI…")
+        raise HTTPException(400, "Use a video or photo file: MP4, MOV, MKV, WEBM, JPG, PNG, WEBP…")
     CACHE.mkdir(parents=True, exist_ok=True)
     vid = uuid.uuid4().hex
     dst, size = CACHE / f"up-{vid}{ext}", 0
@@ -774,6 +1402,42 @@ async def add_video(request: Request, name: str = ""):
         raise HTTPException(400, "That file isn't a video ffmpeg can read.")
     label = re.sub(r"[\[\]()\x00-\x1f]+", " ", Path(name).stem).strip()[:60] or "Mi video"
     return {"id": vid, "name": label, "duration": round(secs, 2), "link": f"[{label}](video:{vid})"}
+
+
+async def add_photo(request: Request, name: str, ext: str) -> dict:
+    CACHE.mkdir(parents=True, exist_ok=True)
+    vid = uuid.uuid4().hex
+    src, png, dst = CACHE / f"photo-{vid}{ext}", CACHE / f"photo-{vid}.png", CACHE / f"up-{vid}.mp4"
+    try:
+        with src.open("wb") as f:
+            async for chunk in request.stream():
+                f.write(chunk)
+        await asyncio.to_thread(photo_clip, src, png, dst)
+    except (OSError, ValueError, RuntimeError) as e:
+        dst.unlink(missing_ok=True)
+        raise HTTPException(400, f"Couldn't use that photo: {e}")
+    finally:
+        src.unlink(missing_ok=True)
+        png.unlink(missing_ok=True)
+    label = re.sub(r"[\[\]()\x00-\x1f]+", " ", Path(name).stem).strip()[:60] or "Mi foto"
+    return {"id": vid, "name": label, "duration": round(duration(dst), 2), "link": f"[{label}](video:{vid})", "photo": True}
+
+
+def photo_clip(src: Path, png: Path, dst: Path):
+    """A PHOTO_SECONDS clip of a photo at its own shape (the edit fits it over a blurred copy), slowly zooming in,
+    with a silent sound track so it also works as an insert."""
+    from PIL import Image, ImageOps
+    with Image.open(src) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")  # phone photos: apply the rotation they were taken with
+        k = 1920 / max(im.size)
+        w, h = (max(2, round(im.width * k / 2) * 2), max(2, round(im.height * k / 2) * 2))
+        im.resize((w, h), Image.LANCZOS).save(png)
+    frames = PHOTO_SECONDS * FPS
+    vf = (f"scale={w * 2}:{h * 2},zoompan=z='1+0.08*on/{frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+          f":d={frames}:s={w}x{h}:fps={FPS},format=yuv420p")
+    ffmpeg(["-i", str(png), "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-vf", vf, "-frames:v", str(frames),
+            "-t", str(PHOTO_SECONDS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-c:a", "aac", "-shortest",
+            str(dst)])
 
 
 @router.post("/api/guide/find")
@@ -891,6 +1555,93 @@ def stop_guide(job_id: str):
         raise HTTPException(404, "Nothing to stop.")
     job["cancel"] = True
     return {"ok": True}
+
+
+_voice_len: dict[tuple, tuple] = {}  # (text, voice, rate) -> (seconds with the breath, word timings)
+
+
+def sentence_spans(words: list[dict], dur: float) -> list[tuple[float, float, str]]:
+    """A narration line's sentences on its own clock: (start, end, text). Each runs until the next one starts
+    (the first from 0, the last to the end of the line), so together they cover the whole line. The render and
+    the part picker both use this, so "frases 2-3" means the same sentences in both."""
+    groups, cur = [], []
+    for w in words:
+        cur.append(w)
+        if re.search(r"[.!?…]['\"”»)]*$", w["w"]):
+            groups.append(cur)
+            cur = []
+    if cur:
+        groups.append(cur)
+    out = []
+    for i, g in enumerate(groups):
+        start = 0.0 if i == 0 else g[0]["s"]
+        end = groups[i + 1][0]["s"] if i + 1 < len(groups) else dur
+        out.append((start, end, " ".join(w["w"] for w in g)))
+    return out
+
+
+@router.post("/api/guide/voice-length")
+def voice_length(body: dict):
+    """How long the voice talks in section n, and its sentences with their times (same voice and speed as the
+    video, measured by making the speech). Inserts are not counted in the times."""
+    try:
+        guide = parse_guide(str(body.get("text") or "")[:60000])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    n = int(body.get("n") or 0)
+    sec = next((s for s in guide["sections"] if s["n"] == n), None)
+    if not sec:
+        raise HTTPException(404, f"No section {n} in the guide.")
+    o = options(body)
+    total, sentences = 0.0, []
+    with tempfile.TemporaryDirectory(prefix="clipstudio_voice_") as tmp:
+        for i, p in enumerate(x for x in sec["pieces"] if x["type"] == "say"):
+            key = (p["text"], o["voice"], o["rate"])
+            if key not in _voice_len:
+                mp3 = Path(tmp) / f"v{i}.mp3"
+                try:
+                    words = speak(p["text"], o["voice"], o["rate"], mp3)
+                except Exception as e:
+                    raise HTTPException(502, f"Couldn't make the voice: {e}")
+                _voice_len[key] = (duration(mp3) + 0.45, words)  # the same breath the video leaves after each line
+            dur, words = _voice_len[key]
+            for a, b, txt in sentence_spans(words, dur):
+                sentences.append({"n": len(sentences) + 1, "text": txt, "start": round(total + a, 2),
+                                  "end": round(total + b, 2), "seconds": round(b - a, 2)})
+            total += dur
+    return {"seconds": round(total, 2), "inserts": sum(p["type"] == "insert" for p in sec["pieces"]),
+            "clips": len(sec["clips"]), "sentences": sentences}
+
+
+CLIP_ID = re.compile(r"^(up-[0-9a-f]{32}|yt-[\w-]{11}|web-[0-9a-f]{16})$")
+
+
+@router.post("/api/guide/clip")
+def prepare_clip(body: dict):
+    """Gets a section's clip ready to watch in the part picker (downloads a link once, like the render does)."""
+    clip = clip_from_link(str(body.get("url") or "").strip())
+    if not clip:
+        raise HTTPException(400, "That isn't a clip link.")
+    if clip["kind"] == "upload":
+        f = next((x for x in CACHE.glob(clip["id"] + ".*") if ".part" not in x.name), None)
+        if not f:
+            raise HTTPException(404, "This video isn't on this computer any more. Add it again.")
+    else:
+        try:
+            f = download_clip(clip)
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
+    return {"id": clip["id"], "src": f"/api/guide/clip/{clip['id']}", "duration": round(duration(f), 2)}
+
+
+@router.get("/api/guide/clip/{cid}")
+def serve_clip(cid: str):
+    if not CLIP_ID.match(cid):
+        raise HTTPException(404, "No such clip.")
+    f = next((x for x in CACHE.glob(cid + ".*") if ".part" not in x.name), None)
+    if not f:
+        raise HTTPException(404, "No such clip.")
+    return FileResponse(f, media_type="video/mp4" if f.suffix.lower() in (".mp4", ".m4v") else None)
 
 
 @router.get("/api/guide/srt/{media}")
