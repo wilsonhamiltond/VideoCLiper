@@ -27,6 +27,7 @@ DOWNLOADS = ROOT / "downloads"
 MEDIA_ID = re.compile(r"^[0-9a-f]{32}$")
 TIME = re.compile(r"^(\d+:){0,2}\d+(\.\d+)?$")  # 90, 1:30, 1:02:30
 MAX_RECORD_MIN = 180
+MAX_PARTS_MIN = 24 * 60  # "Until I stop it" with shorts while recording: a day at most
 MAX_REWIND_MIN = 120 * 60  # YouTube keeps the last 120 hours of a live stream
 
 # Default quality cap when the page doesn't pick one: 0 = the highest resolution the video has (8K included).
@@ -61,12 +62,20 @@ def probe_video(path: Path) -> dict:
     return {"width": s.get("width"), "height": s.get("height"), "codec": s.get("codec_name"),
             "hdr": s.get("color_transfer") in ("smpte2084", "arib-std-b67")}
 
+def probe_duration(path: Path) -> float:
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)]
+    try:
+        return float(subprocess.run(cmd, capture_output=True, text=True).stdout.strip())
+    except ValueError:
+        return 0.0
+
+
 router = APIRouter()
 fetch_jobs: dict[str, dict] = {}
 procs: dict[str, subprocess.Popen] = {}  # running yt-dlp / ffmpeg per job, for Stop
 
 
-def ytdlp_base() -> list[str]:
+def ytdlp_base(cookies: bool = True) -> list[str]:
     cmd = [sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-warnings", "--encoding", "utf-8"]
     # YouTube needs a JavaScript runtime to unlock most formats. yt-dlp looks for Deno by default;
     # Node is far more common on Windows, so offer it too.
@@ -76,7 +85,9 @@ def ytdlp_base() -> list[str]:
     # Signed-in cookies get past YouTube's "confirm you're not a bot" wall. A cookies.txt without the login
     # cookies can't sign in, so skip it and fall back to a browser. yt-dlp writes rotated cookies back to
     # the file after each run, which keeps a good export alive.
-    if COOKIES_FILE.exists() and not cookies_problem():
+    if not cookies:
+        pass
+    elif COOKIES_FILE.exists() and not cookies_problem():
         cmd += ["--cookies", str(COOKIES_FILE)]
     elif browser := cookies_browser():
         cmd += ["--cookies-from-browser", browser]
@@ -226,6 +237,88 @@ def record_live(job_id: str, meta: dict, out: Path, limit: float, max_height: in
     return True
 
 
+def record_live_parts(job_id: str, meta: dict, title: str, limit: float, part_sec: float, max_height: int) -> bool:
+    """Record a live stream in back-to-back parts of `part_sec` seconds, with no gap between them.
+
+    Each finished part becomes its own media file right away and is added to job["parts"], so its moments
+    can be found while the recording goes on. Returns False if no recordable stream was found.
+    """
+    streams = live_formats(meta, max_height)
+    if not streams:
+        return False
+    job = fetch_jobs[job_id]
+    tag = uuid.uuid4().hex
+    pattern, listing = DOWNLOADS / f"{tag}.part%03d.mp4", DOWNLOADS / f"{tag}.parts.csv"
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-nostats"]
+    for f in streams:
+        headers = {**(meta.get("http_headers") or {}), **(f.get("http_headers") or {})}
+        if headers:
+            cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+        cmd += ["-i", f["url"]]
+    audio_map = ["-map", "1:a:0"] if len(streams) == 2 else ["-map", "0:a:0?"]
+    # The segment muxer cuts on the first keyframe after each `part_sec` and lists a part in the CSV only
+    # once it is complete, so a listed part is safe to read while the next one is still being written.
+    cmd += ["-t", f"{limit:g}", "-map", "0:v:0", *audio_map, "-c", "copy", "-f", "segment",
+            "-segment_time", f"{part_sec:g}", "-reset_timestamps", "1", "-segment_format_options", "movflags=+faststart",
+            "-segment_list", str(listing), "-segment_list_type", "csv", str(pattern)]
+    job.setdefault("parts", [])
+    job.setdefault("clock", (time.time(), limit))
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    job["recorder"] = True
+    procs[job_id] = proc
+    if job.get("stopping"):
+        stop_recorder(proc)
+    err: list[bytes] = []
+    threading.Thread(target=lambda: err.append(proc.stderr.read()), daemon=True).start()
+    taken = set()
+
+    def collect():
+        try:
+            rows = listing.read_text("utf-8").splitlines()
+        except OSError:
+            return
+        for row in rows:
+            name = row.split(",", 1)[0].strip()
+            if not name or name in taken:
+                continue
+            taken.add(name)
+            src = DOWNLOADS / name
+            if not src.exists():
+                continue
+            info, dur = probe_video(src), probe_duration(src) or part_sec
+            if src.stat().st_size < 1024 or dur < 15:  # a few seconds left over at the end: not worth clipping
+                src.unlink(missing_ok=True)
+                continue
+            media = uuid.uuid4().hex
+            out = DOWNLOADS / f"{media}.mp4"
+            src.replace(out)
+            n = len(job["parts"]) + 1
+            offset = job.get("part_offset", 0.0)
+            span = f"{clock_text(offset)}–{clock_text(offset + dur)}"
+            job["part_offset"] = offset + dur
+            job["parts"].append({"media": media, "name": safe_name(f"{title} part {n}"), "size": out.stat().st_size,
+                                 "title": f"{title} · part {n} ({span})", "live": True, **info})
+
+    while proc.poll() is None:
+        collect()
+        time.sleep(2)
+    collect()
+    listing.unlink(missing_ok=True)
+    for leftover in DOWNLOADS.glob(f"{tag}.part*.mp4"):
+        leftover.unlink(missing_ok=True)
+    if not job["parts"]:
+        if job.get("stopping"):
+            raise Cancelled()
+        msg = b"".join(err).decode("utf-8", "replace").strip()[-300:]
+        raise RuntimeError("ffmpeg couldn't record the stream: " + (msg or f"exit code {proc.returncode}"))
+    return True
+
+
+def clock_text(s: float) -> str:
+    s = int(s)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
 def stop_recorder(proc: subprocess.Popen):
     # "q" is ffmpeg's own quit key: it stops reading and finishes the MP4 properly, unlike a kill.
     try:
@@ -241,13 +334,22 @@ def finish(job: dict, media: str, out: Path, title: str, live: bool):
     })
 
 
-def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, max_height: int, rewind_min: float = 0):
+def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, max_height: int, rewind_min: float = 0,
+              part_min: float = 0):
     job = fetch_jobs[job_id]
     media = uuid.uuid4().hex
     out = DOWNLOADS / f"{media}.mp4"
     try:
         DOWNLOADS.mkdir(exist_ok=True)
         info = subprocess.run(ytdlp_base() + ["-J", "--", url], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        cookies = True
+        if info.returncode != 0 and "No video formats found" in info.stderr and not job.get("stopping"):
+            # Signed in, YouTube sometimes serves a live stream with no formats at all, while the same stream
+            # plays fine signed out. Try once without cookies, and keep it that way for this job.
+            retry = subprocess.run(ytdlp_base(cookies=False) + ["-J", "--", url], capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace")
+            if retry.returncode == 0:
+                info, cookies = retry, False
         if job.get("stopping"):
             raise Cancelled()
         if info.returncode != 0:
@@ -269,6 +371,25 @@ def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, ma
 
         if live and not rewind:
             job.update(status="recording", progress=0.0)
+            if part_min and record_live_parts(job_id, meta, title, record_min * 60, part_min * 60, max_height):
+                # The stream's link expires after some hours and connections drop: while it is still live and
+                # time is left, read the link again and carry on recording, until Stop or the time is up.
+                t0, limit = job["clock"]
+                while not job.get("stopping") and time.time() - t0 < limit - 30:
+                    time.sleep(3)
+                    again = subprocess.run(ytdlp_base(cookies) + ["-J", "--", url], capture_output=True, text=True,
+                                           encoding="utf-8", errors="replace")
+                    if again.returncode != 0 or not json.loads(again.stdout).get("is_live") or job.get("stopping"):
+                        break  # the stream ended
+                    procs.pop(job_id, None)
+                    try:
+                        record_live_parts(job_id, json.loads(again.stdout), title, limit - (time.time() - t0),
+                                          part_min * 60, max_height)
+                    except RuntimeError:
+                        time.sleep(10)
+                job.pop("clock", None)
+                n = len(job["parts"])
+                return job.update(status="done", progress=1.0, result={"parts": n, "title": title, "live": True})
             if record_live(job_id, meta, out, record_min * 60, max_height):
                 return finish(job, media, out, title, True)
 
@@ -276,7 +397,7 @@ def run_fetch(job_id: str, url: str, start: str, end: str, record_min: float, ma
         # whole video at ~20x. So for a YouTube range, fetch everything and cut the range out locally.
         cut_locally = (start or end) and not live and meta.get("extractor_key") == "Youtube"
         dest = DOWNLOADS / f"{media}.full.mp4" if cut_locally else out
-        base, fmt = ytdlp_base(), format_args(max_height)
+        base, fmt = ytdlp_base(cookies), format_args(max_height)
         if rewind:
             # Same yt-dlp, wrapped so it starts `rewind_min` before the live edge and stops at it. Only the
             # from-start formats can reach back; without them yt-dlp would quietly record from now instead.
@@ -392,7 +513,7 @@ def start_fetch(body: dict):
         record_min = float(body.get("record_min") or 10)
     except ValueError:
         raise HTTPException(400, "record_min must be a number")
-    record_min = max(0.5, min(MAX_RECORD_MIN, record_min))
+    record_min = max(0.5, record_min)  # capped below, once we know whether it records in parts
     try:
         rewind_min = max(0.0, min(MAX_REWIND_MIN, float(body.get("rewind_min") or 0)))
     except ValueError:
@@ -401,9 +522,17 @@ def start_fetch(body: dict):
         max_height = int(body.get("max_height", DEFAULT_MAX_HEIGHT) or 0)  # 0 = best available
     except ValueError:
         raise HTTPException(400, "max_height must be a number")
+    try:
+        # Live shorts: record in parts this many minutes long and find each part's moments as it finishes.
+        part_min = max(0.0, float(body.get("part_min") or 0))
+    except ValueError:
+        raise HTTPException(400, "part_min must be a number")
+    part_min = 0.0 if rewind_min or (start or end) else (max(2.0, part_min) if part_min else 0.0)
+    record_min = min(MAX_PARTS_MIN if part_min else MAX_RECORD_MIN, record_min)
     job_id = uuid.uuid4().hex
     fetch_jobs[job_id] = {"status": "reading link", "progress": 0.0}
-    threading.Thread(target=run_fetch, args=(job_id, url, start, end, record_min, max(0, max_height), rewind_min), daemon=True).start()
+    threading.Thread(target=run_fetch, args=(job_id, url, start, end, record_min, max(0, max_height), rewind_min, part_min),
+                     daemon=True).start()
     return {"job": job_id}
 
 

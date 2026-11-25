@@ -45,6 +45,7 @@ def add(kind: str, title: str, body: str = "", status: str = "info", **extra) ->
 
 
 def update(nid: str, **fields):
+    item = None
     with _lock:
         items = _load()
         for it in items:
@@ -52,10 +53,23 @@ def update(nid: str, **fields):
                 it.update(fields)
                 if fields.get("status") in ("done", "error", "cancelled"):
                     it["time_done"] = time.time()
+                item = it
                 break
         _save(items)
     if fields.get("status") in ("done", "error", "cancelled"):
         live.pop(nid, None)
+    if item and fields.get("status") in ("done", "error"):
+        _push(item)
+
+
+def _push(it: dict):
+    """Phone / browser push for a finished job (push.py)."""
+    import push
+    moments, ok = it.get("kind") == "moments", it["status"] == "done"
+    head = ("Clips ready" if moments else "Video ready") if ok else ("Import failed" if moments else "Video failed")
+    if moments and ok and not it.get("result"):
+        head = "Recording ended"
+    push.send(f"{head} · {it.get('title', '')}"[:120], it.get("body", ""), it["id"])
 
 
 def _interrupted():
@@ -113,4 +127,27 @@ def delete(nid: str):
         if it.get("status") == "running":
             raise HTTPException(400, "Cancel the job first.")
         _save([x for x in items if x["id"] != nid])
-    return {"ok": True}
+    media = (it.get("result") or {}).get("media") or ""
+    return {"ok": True, "media": media if media and delete_video(media) else ""}
+
+
+def delete_video(media: str) -> bool:
+    """Removing a finished notification removes its video too: the saved video in the studio
+    (data/projects), its analysis (data/analysis) and every file of it in downloads/."""
+    import fetch
+    import projects
+    if not fetch.MEDIA_ID.match(media):
+        return False
+    for path in projects.PROJECTS.glob("*.json") if projects.PROJECTS.exists() else []:
+        try:
+            if json.loads(path.read_text("utf-8")).get("media") == media:
+                path.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            continue
+    (ROOT / "data" / "analysis" / f"{media}.json").unlink(missing_ok=True)
+    for path in fetch.DOWNLOADS.glob(f"{media}.*"):  # .mp4, .srt, .body.mp4, .words.json…
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:  # still open by a player or ffmpeg (Windows)
+            print(f"couldn't delete {path.name}: {e}")
+    return True

@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -50,10 +51,13 @@ class PublishError(Exception):
 #               fb_page? (wanted Facebook Page: name or ID), fb_page_id? (the Page actually connected),
 #               yt_channel? (wanted channel: "@handle" or "UC…"), yt_channel_id?, yt_handle? (the channel actually connected),
 #               brand_banner?, brand_logo? (branding images as data: URLs, the defaults for the clip banner),
-#               brand_handle? (the @name drawn on clips),
+#               brand_handle? (the @name drawn on clips), viral_words?, ai_rules? (the channel's style rules for AI text),
+#               viral_style?, viral_len?, viral_criteria? (how moments are picked for clips posted here),
 #               follow_on?, follow_text?, follow_btn?, follow_at?, follow_dur? (the "Follow me" scene in clips)}
 # Any number of each per platform; several accounts can share one app.
 KEYS = ("client_id", "client_secret", "config_id")
+VIRAL_STYLES = ("general", "alofoke")  # must match STYLES in index.html
+VIRAL_LENS = (15, 30, 45, 60, 90)      # must match LEN_CHOICES in index.html
 
 
 def _new_id() -> str:
@@ -407,7 +411,8 @@ def _public(a: dict, apps: list[dict]) -> dict:
             "configured": bool(app and app.get("client_id") and app.get("client_secret")),
             "connected": bool(a.get("token")), "name": a.get("name"),
             "brand_banner": a.get("brand_banner"), "brand_logo": a.get("brand_logo"), "brand_handle": a.get("brand_handle"),
-            "viral_words": a.get("viral_words"),
+            "viral_words": a.get("viral_words"), "ai_rules": a.get("ai_rules"),
+            "viral_style": a.get("viral_style"), "viral_len": a.get("viral_len"), "viral_criteria": a.get("viral_criteria"),
             **{k: a.get(k) for k in ("follow_on", "follow_text", "follow_btn", "follow_at", "follow_dur")}}
 
 
@@ -545,6 +550,19 @@ def _account_fields(body: dict, platform: str) -> dict:
     # "Follow me" scene: a card with the logo, handle and a Follow button shown for a few seconds in each clip.
     if "viral_words" in body:  # words / hashtags the AI works into this account's post text
         out["viral_words"] = (_clean(body.get("viral_words")) or "")[:800] or None
+    if "ai_rules" in body:  # this channel's own style rules for the AI's title, text hook and thumbnail text
+        out["ai_rules"] = (_clean(body.get("ai_rules")) or "")[:4000] or None
+    # Viral video criteria: how moments are picked for clips posted here (see "For account" in Find the best moments).
+    if "viral_style" in body:  # moment scoring: "general" or "alofoke" (talk show / reality show)
+        out["viral_style"] = body.get("viral_style") if body.get("viral_style") in VIRAL_STYLES else None
+    if "viral_len" in body:  # clip length in seconds
+        try:
+            n = int(body.get("viral_len") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        out["viral_len"] = n if n in VIRAL_LENS else None
+    if "viral_criteria" in body:  # what makes a moment go viral here, in the owner's words; the AI rates moments by it
+        out["viral_criteria"] = (_clean(body.get("viral_criteria")) or "")[:2000] or None
     if "follow_on" in body:
         out["follow_on"] = bool(body.get("follow_on")) or None
     if "follow_text" in body:
@@ -711,6 +729,73 @@ def tiktok_creator_info(acct_id: str):
         raise HTTPException(400, str(e))
 
 
+# ---------- YouTube: related video ----------
+# A Short can link a video from the same channel ("Related video"). The Data API has no field for that link
+# (only YouTube Studio sets it), so the picked video goes at the top of the description as a link, and the
+# result carries the Studio edit page so the official link can be set in one click.
+def _duration_s(iso: str) -> int:
+    m = re.fullmatch(r"P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", iso or "")
+    if not m:
+        return 0
+    d, h, mi, se = (int(x or 0) for x in m.groups())
+    return ((d * 24 + h) * 60 + mi) * 60 + se
+
+
+def channel_videos(acct_id: str, limit: int = 50) -> list[dict]:
+    """The channel's latest uploads (newest first): id, title, published date, length and a thumbnail."""
+    auth = {"Authorization": f"Bearer {access_token(acct_id)}"}
+    _, _, r = http("GET", "https://www.googleapis.com/youtube/v3/channels?part=contentDetails&mine=true", headers=auth)
+    items = r.get("items") or []
+    uploads = items and items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
+    if not uploads:
+        return []
+    _, _, pl = http("GET", "https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults="
+                    f"{min(limit, 50)}&playlistId={uploads}", headers=auth)
+    ids = [i["contentDetails"]["videoId"] for i in pl.get("items") or []]
+    if not ids:
+        return []
+    _, _, v = http("GET", "https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,status&id="
+                   + ",".join(ids), headers=auth)
+    by_id = {x["id"]: x for x in v.get("items") or []}
+    out = []
+    for vid in ids:  # keep the playlist's newest-first order
+        x = by_id.get(vid)
+        if not x:
+            continue
+        sn, th = x["snippet"], x["snippet"].get("thumbnails") or {}
+        out.append({"id": vid, "title": sn.get("title") or vid, "published": sn.get("publishedAt"),
+                    "seconds": _duration_s(x.get("contentDetails", {}).get("duration", "")),
+                    "privacy": x.get("status", {}).get("privacyStatus"),
+                    "thumb": (th.get("default") or th.get("medium") or {}).get("url")})
+    return out
+
+
+@router.get("/api/accounts/{acct_id}/youtube-videos")
+def youtube_videos(acct_id: str):
+    if _find(acct_id)["platform"] != "youtube":
+        raise HTTPException(400, "Not a YouTube account.")
+    try:
+        return {"videos": channel_videos(acct_id)}
+    except PublishError as e:
+        raise HTTPException(400, str(e))
+
+
+def _related_video(acct_id: str, ch: dict, video_id: str) -> dict:
+    """The picked related video, checked to be on the channel this upload goes to."""
+    video_id = (video_id or "").strip()
+    if not re.fullmatch(r"[\w-]{11}", video_id):
+        raise PublishError("The related video ID isn't valid. Pick it again.")
+    sn = _video_info(acct_id, video_id, "snippet").get("snippet") or {}
+    if sn.get("channelId") != ch["id"]:
+        raise PublishError(f"The related video isn't on {_channel_text(ch)}. Pick one of its own videos.")
+    return {"id": video_id, "title": sn.get("title") or ""}
+
+
+def _with_related(description: str, rel: dict) -> str:
+    line = f"▶ Full video: https://youtu.be/{rel['id']}"
+    return (line + "\n\n" + description)[:4900] if description else line
+
+
 def publish_youtube(acct_id: str, path: Path, f: dict, job: dict) -> dict:
     tok = access_token(acct_id)
     # The token decides the channel. Check it is still the one this account was connected to
@@ -730,8 +815,15 @@ def publish_youtube(acct_id: str, path: Path, f: dict, job: dict) -> dict:
         if t and total + len(t) + 2 <= 480:
             tags.append(t)
             total += len(t) + 2
+    rel = None
+    if f.get("related_video"):
+        job["status"] = "checking the related video"
+        rel = _related_video(acct_id, ch, f["related_video"])
+    description = (f.get("description") or "")[:4900]
+    if rel:
+        description = _with_related(description, rel)
     meta = {
-        "snippet": {"title": f["title"][:100], "description": (f.get("description") or "")[:4900],
+        "snippet": {"title": f["title"][:100], "description": description,
                     "tags": tags, "categoryId": str(f.get("category") or "22")},
         "status": {"privacyStatus": f.get("privacy") or "private", "selfDeclaredMadeForKids": False},
     }
@@ -739,7 +831,11 @@ def publish_youtube(acct_id: str, path: Path, f: dict, job: dict) -> dict:
     if at:  # YouTube keeps it private and makes it public at publishAt
         meta["status"].update(privacyStatus="private", publishAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at)))
     if f.get("yt_format") == "video":  # a video made from a guide: a regular YouTube video only, never a Short
-        return _publish_youtube_regular(acct_id, tok, ch, path, meta, f, at, job)
+        out = _publish_youtube_regular(acct_id, tok, ch, path, meta, f, at, job)
+        if rel:
+            out["message"] += f" Linked \"{rel['title']}\" at the top of the description."
+            out["related_video"] = rel["id"]
+        return out
     job["status"] = "uploading the Short to YouTube"
     video = _youtube_upload(tok, path, meta)
     message = (f"Short uploaded to {_channel_text(ch)}; private until it goes public {_when(at)}." if at else
@@ -759,6 +855,11 @@ def publish_youtube(acct_id: str, path: Path, f: dict, job: dict) -> dict:
         extra, note = _publish_youtube_long(acct_id, path, meta, thumb, job)
         out.update(extra)
         message += " " + note
+    if rel:
+        studio = f"https://studio.youtube.com/video/{video['id']}/edit"
+        out.update(related_video=rel["id"], related_studio_url=studio)
+        message += (f" Linked \"{rel['title']}\" at the top of the description. YouTube's API can't set a Short's"
+                    " Related video, so pick it under \"Related video\" in YouTube Studio.")
     return {**out, "message": message}
 
 

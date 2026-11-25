@@ -12,3 +12,4 @@ voice_server.log
 .claude/
 brand/
 .env
+.lan_key

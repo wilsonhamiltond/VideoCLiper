@@ -135,7 +135,10 @@ def process(cid: str):
             done.set()
 
     try:
-        started = _import({"url": v["url"], "count": CLIPS, "len": 60}, on_done=finished,
+        # The account's viral video criteria pick the moments (its clip length here; its style and criteria in the page).
+        acct = next((a for a in publish.load() if a["id"] == ch["account_id"]), {})
+        started = _import({"url": v["url"], "count": CLIPS, "len": acct.get("viral_len") or 60, "account": ch["account_id"]},
+                          on_done=finished,
                           title=f"{ch['name']}: {v['title']}")
     except Exception as e:
         entry.update(status="error", error=getattr(e, "detail", None) or str(e))
@@ -178,6 +181,15 @@ def start(import_fn):
         if changed:
             _write(items)
     threading.Thread(target=_watch, daemon=True, name="channel-watcher").start()
+
+
+def request_for(nid: str) -> dict | None:
+    """The import a channel started for this notification, so the bell can retry it."""
+    for c in load():
+        for x in c.get("videos") or []:
+            if x.get("nid") == nid:
+                return {"url": x["url"], "count": CLIPS, "len": 60}
+    return None
 
 
 def _public(c: dict) -> dict:

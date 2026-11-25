@@ -3,6 +3,7 @@
 Run:  .venv\\Scripts\\python server.py      then open http://127.0.0.1:8000
 Env:  WHISPER_MODEL (default "large-v3-turbo" on GPU, "small" on CPU), WHISPER_DEVICE ("auto" | "cuda" | "cpu"), PORT (default 8000)
 """
+import difflib
 import itertools
 import json
 import os
@@ -34,6 +35,8 @@ import photos
 import llm
 import campaigns
 import channels
+import criteria_check
+import push
 
 ROOT = Path(__file__).parent
 # large-v3-turbo catches far more dialog (short lines, speech over music/gunfire) but is slow on CPU,
@@ -61,7 +64,45 @@ app.include_router(photos.router)
 app.include_router(llm.router)
 app.include_router(campaigns.router)
 app.include_router(channels.router)
+app.include_router(push.router)
+app.include_router(criteria_check.router)
 jobs: dict[str, dict] = {}
+
+
+LAN = os.environ.get("LAN", "") == "1"  # LAN=1: also serve phones/PCs on your Wi-Fi (needs the access key)
+LAN_KEY_FILE = Path(__file__).resolve().parent / ".lan_key"
+
+
+def lan_key() -> str:
+    if not LAN_KEY_FILE.exists():
+        import secrets
+        LAN_KEY_FILE.write_text(secrets.token_urlsafe(16))
+    return LAN_KEY_FILE.read_text().strip()
+
+
+def is_lan_ip(host: str) -> bool:
+    import ipaddress
+    try:  # only private IP literals: a hostname could be a DNS-rebinding attack
+        return ipaddress.ip_address(host.strip("[]")).is_private
+    except ValueError:
+        return False
+
+
+def lan_ips() -> list[str]:
+    import socket
+    ips = set()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))  # no packet is sent; just picks the outgoing interface
+        ips.add(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    try:
+        ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+    return sorted(ip for ip in ips if is_lan_ip(ip) and not ip.startswith("127."))
 
 
 @app.middleware("http")
@@ -70,7 +111,18 @@ async def local_only(request: Request, call_next):
     # (blocks DNS-rebinding) and require a custom header on writes (blocks cross-site form posts).
     host = (request.headers.get("host") or "").rsplit(":", 1)[0]
     if host not in ("127.0.0.1", "localhost", "[::1]"):
-        return JSONResponse({"detail": "Clip Studio only accepts local requests."}, status_code=403)
+        if not (LAN and is_lan_ip(host)):
+            return JSONResponse({"detail": "Clip Studio only accepts local requests."}, status_code=403)
+        # Other devices on the network must prove they were given the key (printed when the server starts).
+        import hmac
+        key = lan_key()
+        if hmac.compare_digest(request.query_params.get("key", ""), key):
+            from fastapi.responses import RedirectResponse
+            resp = RedirectResponse(request.url.remove_query_params("key"), status_code=303)
+            resp.set_cookie("clip_key", key, max_age=365 * 86400, httponly=True, samesite="lax")  # strict is dropped when the link is tapped in another app
+            return resp
+        if not hmac.compare_digest(request.cookies.get("clip_key", ""), key):
+            return JSONResponse({"detail": "Open the LAN link printed by server.py (it includes the access key)."}, status_code=403)
     if request.method == "POST" and request.headers.get("x-clip-studio") != "1":
         return JSONResponse({"detail": "Missing X-Clip-Studio header."}, status_code=403)
     return await call_next(request)
@@ -555,12 +607,38 @@ CAPTION_PROMPT = """You write on-screen text for a short vertical video clip (Ti
 The images are frames from the clip, in order.{transcript}
 """ + ENGAGEMENT_RULES + """
 Write:
-- "hook": a scroll-stopping line for the top of the video, at most 8 words, specific to what is shown. No hashtags.
-  Wrap the one or two most important words of the hook in *asterisks* so they get highlighted, e.g. "Nobody talks about *this*".
+- "hook": a scroll-stopping line for the top of the video, at most 3 words, specific to what is shown. No hashtags.
+  Wrap the one most important word of the hook in *asterisks* so they get highlighted, e.g. "Nobody talks about *this*".
   Highlight a word that carries the meaning (a noun, verb or number), never a filler word.
 - "caption": one punchy line for the bottom of the video, at most 14 words, adding context or a reaction, or teasing the payoff. May end with one emoji.
 Write in {language}. Do not describe the frames literally ("a man in a kart"); react to them like a creator would.
 Reply with JSON only: {{"hook": "...", "caption": "..."}}"""
+
+
+HOOK_RULES_ES = """Hook style for Spanish (Dominican audience). The hook must stop the scroll in the first 3 seconds:
+- Short and in CAPITALS: never more than 3 words.
+- Lead with a shock or reveal word that fits what really happens in the clip:
+  Reveal: "SE FILTRÓ TODO", "LA VERDAD OCULTA", "DESTAPÓ LA OLLA".
+  Confrontation: "LE RESPONDIÓ DURO", "SIN FILTRO", "EXPLOTÓ EN VIVO", "SE CANSÓ", "LE TIRÓ DURO", "NO SE CALLÓ".
+  Consequence: "QUEDÓ FUERA", "LE COSTÓ CARO", "NO AGUANTÓ MÁS", "EL FIN DE...".
+  Surprise: "NADIE LO ESPERABA", "¡QUÉ VERGÜENZA!", "SE PASÓ", "¡QUÉ FUERTE!", "¡AY, MI MADRE!", "SE PRENDIÓ", "SE ARMÓ".
+- Use Dominican slang so it sounds close and authentic ("se prendió", "le tiró con todo", "bulto", "sonido"), not neutral or formal Spanish.
+- Or use a fast curiosity opener: "¿TIENE RAZÓN?", "LO QUE PASÓ", "EL GRAN ERROR".
+- Name the person or the topic when it is known from the speech (e.g. "*NASTA* SE CANSÓ").
+- Pick the angle that matches the clip: confrontation only if someone really pushes back, consequence only if something was lost. Never invent a fight, a leak or a scandal that is not in the clip.
+- Bad (flat, descriptive): "EL REY DE LA MAÑANA EN EL SOFÁ". Good: "SIN *FILTRO*", "¡QUÉ *FUERTE*!", "*NADIE* LO ESPERABA".
+"""
+
+
+def max_words(text: str, n: int) -> str:
+    """The first n words of text, without a dangling highlight * or trailing comma/colon after the cut."""
+    words = text.split()
+    if len(words) <= n:
+        return text
+    out = " ".join(words[:n]).rstrip(",;:-–— ")
+    if out.count("*") % 2:  # a highlight was cut in half: close it on the last word
+        out += "*"
+    return out
 
 
 @app.post("/api/caption")
@@ -571,6 +649,12 @@ def ai_caption(body: dict):
         transcript=f'\nWhat is said in the clip: "{transcript[:1500]}"' if transcript else "\nThe clip has no speech.",
         language=body.get("language") or "English",
     )
+    lang = (body.get("language") or "").strip().lower()
+    if lang.startswith(("spanish", "español", "espanol", "es")):
+        prompt = prompt.replace("\nWrite:\n", "\n" + HOOK_RULES_ES + "Write:\n", 1)
+    rules = channel_rules(body)
+    if rules:
+        prompt = prompt.replace("\nWrite:\n", rules_block(rules, "on-screen text hook and caption") + "Write:\n", 1)
     camp = campaigns.from_body(body)
     if camp:
         prompt = prompt.replace("\nWrite:\n", campaigns.prompt_block(camp) + "\nOn-screen text has no hashtags.\nWrite:\n", 1)
@@ -578,21 +662,37 @@ def ai_caption(body: dict):
     schema = {"type": "object", "properties": {"hook": {"type": "string"}, "caption": {"type": "string"}}, "required": ["hook", "caption"]}
     out = ollama_json(model, prompt, schema, frames, 0.8)
     clean = lambda s: str(s or "").strip().strip('"').strip()
-    return {"hook": clean(out.get("hook")), "caption": clean(out.get("caption")), "model": model["label"],
+    return {"hook": max_words(clean(out.get("hook")), 3), "caption": clean(out.get("caption")), "model": model["label"],
             "faces": detect_faces(frames)}
 
 
 VIRALITY_PROMPT = """You judge which moments of a longer video would go viral as standalone short clips (TikTok / Reels / Shorts).
 Below is what is said in each candidate clip. A viewer sees only that clip, with no context from the rest of the video.
 Rate every clip from 0 to 10 on:
-- "hook": do the first words make people stop scrolling (bold claim, question, surprise, conflict)? A greeting or slow build-up is 0-3.
+- "hook": do the first words make people stop scrolling (bold claim, question, surprise, conflict, a joke)? A greeting or slow build-up is 0-3.
 - "story": is it self-contained and easy to follow without the rest of the video, with no filler?
 - "payoff": does it end on a punchline, reveal, strong opinion or emotional peak rather than trailing off mid-thought?
 - "overall": how likely it is to be watched to the end and shared. Use the full range; most clips are 3-7.
+  What gets shared most: people doing or saying something funny (a joke that lands, teasing, the room laughing,
+  a ridiculous situation), fights, controversies (a scandal, an accusation, a leak) and face-to-face confrontations.
+  A clip that clearly has one of these, with its punchline or outcome inside the clip, is 7-10.
 And "why": at most 8 words in {language} on what makes it work or not.
 Clips:
 {clips}
 Reply with JSON only: {{"ratings": [{{"hook": 0, "story": 0, "payoff": 0, "overall": 0, "why": "..."}}, ...]}} with exactly {n} items, in order."""
+
+# "Talk show · Alofoke" style: what the most-viewed La Casa de Alofoke / Alofoke Radio Show shorts have in common
+# (546 shorts compared, Nov 2026: top ones 1-2.7 M views against a 105 K median).
+ALOFOKE_VIRAL = """This is a Dominican talk show or reality show (like La Casa de Alofoke / Alofoke Radio Show). There the most-viewed shorts share these traits, so rate "overall" by them:
+- A face-to-face clash: someone is called out, put in their place or answers back ("te voy a decir algo", "para que tú estés claro", "esta no es tu casa"). These get about twice the usual views.
+- A reveal: money with a figure (a first cheque, gifts, what someone was paid or owes), a confession, an admission, a secret, someone expelled.
+- A known person (a housemate, artist, athlete or host) at the centre of it.
+- It opens already inside the moment (a line said straight to someone, or a "¿de cuánto…?" question), not with a set-up or a story start.
+- Funny moments: a joke or teasing that makes the room laugh, someone doing something ridiculous, a funny comeback.
+- A controversy: a scandal, an accusation, cheating, a leak, a beef between artists.
+- It ends on the answer, the comeback or the laugh, not mid-ramble.
+Rate low: long opinion monologues ("muchos dicen…"), general advice, and shouting where you can't tell what the clash is about.
+"""
 
 
 @app.post("/api/virality")
@@ -610,6 +710,14 @@ def ai_virality(body: dict):
     schema = {"type": "object", "required": ["ratings"],
               "properties": {"ratings": {"type": "array", "minItems": n, "maxItems": n, "items": item}}}
     prompt = VIRALITY_PROMPT.format(language=body.get("language") or "English", clips=listing, n=n)
+    if body.get("style") == "alofoke":
+        prompt = prompt.replace("\nClips:\n", "\n" + ALOFOKE_VIRAL + "Clips:\n", 1)
+    criteria = re.sub(r"[{}]", "", str(body.get("criteria") or "")).strip()[:2000]
+    if criteria:  # the account's own "what goes viral here": it outranks the general traits above
+        label = re.sub(r'[{}"]', "", str(body.get("criteria_label") or "")).strip()[:60]
+        prompt = prompt.replace("\nClips:\n", f'\nVIRAL CRITERIA of the account {label or "these clips are for"}, in its owner\'s words.'
+                                " Rate \"overall\" by these first; they outrank every other trait in this prompt:\n"
+                                f'"""\n{criteria}\n"""\nClips:\n', 1)
     out = ollama_json(model, prompt, schema, None, 0.2)
 
     def num(v):
@@ -625,6 +733,511 @@ def ai_virality(body: dict):
                        | {"why": str(r.get("why") or "").strip()[:80]})
     ratings += [None] * (n - len(ratings))  # a short reply leaves the rest unrated
     return {"ratings": ratings, "model": model["label"]}
+
+
+CRITERIA_PROMPT = """Below are the most-viewed and the least-viewed Shorts of a channel niche (titles and what is said).
+Work out what the most-viewed ones have in common that the least-viewed ones lack: the kind of moment, how it opens,
+how it ends, who is in it, the topic. Write the "what goes viral here" criteria for a clip channel in this niche:
+5 to 8 short lines, each starting with "- ", concrete and checkable from what is said in a clip, the last line or two
+saying what to skip. Base every line on these examples; do not add generic advice. Write in {language}.
+MOST-VIEWED:
+{top}
+LEAST-VIEWED:
+{low}
+Reply with JSON only: {{"criteria": "- ...\\n- ..."}}"""
+
+
+@app.post("/api/viral-criteria")
+def ai_viral_criteria(body: dict):
+    """The AI writes an account's "what goes viral here" from its niche's top and least-viewed shorts."""
+    def listing(items):
+        return "\n".join(f'{i + 1}. ({int(x.get("views") or 0):,} views) "{str(x.get("title") or "")[:120]}": '
+                         f'"{str(x.get("text") or "")[:500]}"' for i, x in enumerate(items[:12]))
+    top, low = [x for x in body.get("top") or [] if isinstance(x, dict)], [x for x in body.get("low") or [] if isinstance(x, dict)]
+    if len(top) < 2 or len(low) < 2:
+        raise HTTPException(400, "Not enough shorts to compare")
+    prompt = CRITERIA_PROMPT.format(language=body.get("language") or "Spanish",
+                                    top=listing(top).replace("{", "").replace("}", ""),
+                                    low=listing(low).replace("{", "").replace("}", ""))
+    model = ai_model()
+    out = ollama_json(model, prompt, {"type": "object", "required": ["criteria"],
+                                      "properties": {"criteria": {"type": "string"}}}, None, 0.3)
+    text = str(out.get("criteria") or "").replace("\\n", "\n").strip()[:2000]
+    if not text:
+        raise HTTPException(502, "The AI wrote no criteria. Try again.")
+    return {"criteria": text, "model": model["label"]}
+
+
+CONFLICT_PROMPT = """Below is what is said in a short video clip (its captions). Several people may speak; turns are not marked.
+Decide, strictly from these words, whether the clip shows a REAL conflict happening right now between people in it:
+- "fight": they threaten or insult each other, or it turns physical.
+- "confrontation": someone is called out, challenged or told off to their face, and pushes back or is shut down.
+- "argument": two or more sides really disagree and go back and forth.
+- "none": anything else. Loud talk, swear words, jokes, friendly teasing, a proverb, telling a story about a past
+  fight, or one person ranting with nobody answering are "none".
+If it is a conflict, "quote" must copy the exact words from the captions where the clash is clearest (at most 20 words).
+A conflict without a real quote from the captions is "none".
+"heat": 0-10, how heated it gets (0 for "none"). "who": who clashes with whom, at most 6 words in {language}, names if said.
+Captions: "{text}"
+Reply with JSON only: {{"conflict": "none", "heat": 0, "who": "", "quote": ""}}"""
+
+CONFLICT_KINDS = ("fight", "confrontation", "argument", "none")
+
+
+def _norm(t: str) -> str:
+    return " ".join(re.sub(r"[^\w\s]", " ", t.lower()).split())
+
+
+@app.post("/api/verify-conflict")
+def ai_verify_conflict(body: dict):
+    """Verifies whether one clip really holds a fight, confrontation or argument. The AI must quote the clash, and
+    the quote is checked against the transcript, so a conflict the AI imagines is turned down."""
+    text = str(body.get("text") or "").strip()[:2000]
+    if len(text.split()) < 4:
+        raise HTTPException(400, "Not enough speech to verify")
+    model = ai_model()
+    schema = {"type": "object", "required": ["conflict", "heat", "who", "quote"],
+              "properties": {"conflict": {"type": "string", "enum": list(CONFLICT_KINDS)},
+                             "heat": {"type": "integer", "minimum": 0, "maximum": 10},
+                             "who": {"type": "string"}, "quote": {"type": "string"}}}
+    out = ollama_json(model, CONFLICT_PROMPT.format(language=body.get("language") or "English",
+                                                    text=text.replace('"', "'")), schema, None, 0.1)
+    kind = str(out.get("conflict") or "none").strip().lower()
+    kind = kind if kind in CONFLICT_KINDS else "none"
+    quote = str(out.get("quote") or "").strip().strip('"')[:200]
+    q, said = _norm(quote), _norm(text)
+    # The quote must really be in the captions (a 60 % unbroken match allows for small slips in the AI's copy).
+    grounded = bool(q) and (q in said or difflib.SequenceMatcher(None, q, said, autojunk=False)
+                            .find_longest_match(0, len(q), 0, len(said)).size >= 0.6 * len(q))
+    if kind != "none" and not grounded:
+        kind = "none"
+    try:
+        heat = max(0, min(10, int(out.get("heat") or 0)))
+    except (TypeError, ValueError):
+        heat = 5
+    real = kind != "none"
+    return {"conflict": kind, "heat": heat if real else 0, "who": str(out.get("who") or "").strip()[:60] if real else "",
+            "quote": quote if real else "", "model": model["label"]}
+
+
+FX_VIS_AI = {"punch": "quick zoom punch: stresses a key word, a reaction or a punchline",
+             "shake": "camera shake: impact, shock, big laugh, something loud",
+             "flash": "white flash: a reveal, a cut to something new, a before/after",
+             "glitch": "digital glitch: a twist, something weird, a lie or a correction",
+             "push": "slow push-in (3 s): tension or a serious build-up before an answer",
+             "none": "no visual"}
+FX_SND_AI = {"boom": "deep boom: the big reveal or strongest moment", "hit": "punchy hit: a punchline or a strong word",
+             "whoosh": "whoosh: movement, a change of topic or scene", "riser": "riser: build-up just before a reveal",
+             "glitch": "glitch noise: a twist", "ding": "ding: a right answer, an idea, a number", "pop": "pop: light emphasis",
+             "drop": "bass drop: the beat kicks in, hype", "camera": "camera shutter: a pose or a photo-like moment",
+             "scratch": "record scratch: something unexpected, a 'wait, what?'", "none": "no sound"}
+
+AI_EFFECTS_PROMPT = """You are the editor of a short vertical video (TikTok / Reels / Shorts) that is {seconds:.0f} seconds long.
+Place visual and sound effects that make it more engaging, at the moments that deserve them.
+
+What is said, with the second each word starts:
+{transcript}
+
+Loudest / busiest moments (second: strength): {peaks}
+The images are frames of the clip at these seconds, in order: {frame_times}
+
+Visual effects you can use: {vis}
+Sound effects you can use: {snd}
+
+Rules:
+- Pick {lo} to {hi} moments. Put each one exactly on the word or action it stresses (a punchline, a strong word, a reaction, a reveal, a laugh, a number), using the word times above or the loud moments.
+- Never in the first second (the hook has its own effect). At least 2.5 seconds between moments. No moment in the last half second.
+- Match the effect to the meaning; vary them and don't repeat the same pair more than twice. Fewer, well-placed effects beat many.
+- "hook" is the effect for the very start of the short: usually a punch or flash with a boom or whoosh.
+- "why": a few words in {language} saying what happens there.
+Reply with JSON only."""
+
+
+@app.post("/api/ai-effects")
+def ai_effects(body: dict):
+    """AI-placed effects for a clip: moments (seconds from the clip start) with a visual and a sound, and a hook
+    effect. The page sends the transcript with word times, the loudness peaks and a few frames."""
+    try:
+        dur = max(1.0, float(body.get("seconds") or 0))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "seconds must be a number")
+    words = [w for w in body.get("words") or [] if isinstance(w, dict)][:600]
+    peaks = [p for p in body.get("peaks") or [] if isinstance(p, dict)][:12]
+    frames = [f for f in body.get("frames") or [] if isinstance(f, str)][:4]
+    times = [float(t) for t in (body.get("frame_times") or [])][:len(frames)]
+    # The transcript as lines of a few words, each line starting with its time: short enough for the local model.
+    lines, cur = [], []
+    for w in words:
+        cur.append(w)
+        if len(cur) >= 8 or str(w.get("w", "")).rstrip().endswith((".", "?", "!")):
+            lines.append(f"[{float(cur[0].get('t', 0)):.1f}] " + " ".join(f"{x.get('w', '')}" for x in cur))
+            cur = []
+    if cur:
+        lines.append(f"[{float(cur[0].get('t', 0)):.1f}] " + " ".join(f"{x.get('w', '')}" for x in cur))
+    transcript = "\n".join(lines)[:5000] or "(no speech: use the loud moments and the frames)"
+    hi = max(2, min(8, int(dur / 4)))
+    lo = min(hi, 2 if dur < 15 else 3)
+    v_keys, s_keys = list(FX_VIS_AI), list(FX_SND_AI)
+    mark = {"type": "object", "required": ["t", "v", "s", "why"],
+            "properties": {"t": {"type": "number"}, "v": {"type": "string", "enum": v_keys},
+                           "s": {"type": "string", "enum": s_keys}, "why": {"type": "string"}}}
+    schema = {"type": "object", "required": ["hook", "marks"], "properties": {
+        "hook": {"type": "object", "required": ["v", "s"], "properties": {"v": {"type": "string", "enum": v_keys},
+                                                                         "s": {"type": "string", "enum": s_keys}}},
+        "marks": {"type": "array", "maxItems": hi, "items": mark}}}
+    prompt = AI_EFFECTS_PROMPT.format(
+        seconds=dur, transcript=transcript, lo=lo, hi=hi, language=body.get("language") or "Spanish",
+        peaks=", ".join(f"{float(p.get('t', 0)):.1f}: {float(p.get('z', 0)):.1f}" for p in peaks) or "(none)",
+        frame_times=", ".join(f"{t:.1f}" for t in times) or "(no frames)",
+        vis="; ".join(f"{k} = {v}" for k, v in FX_VIS_AI.items()), snd="; ".join(f"{k} = {v}" for k, v in FX_SND_AI.items()))
+    model = ai_model()
+    out = ollama_json(model, prompt, schema, [f.split(",", 1)[-1] for f in frames] or None, 0.4)
+
+    def ok(v, keys):
+        return v if v in keys else "none"
+    marks = []
+    for m in sorted((m for m in out.get("marks") or [] if isinstance(m, dict)), key=lambda m: float(m.get("t") or 0)):
+        try:
+            t = round(float(m.get("t")), 1)
+        except (TypeError, ValueError):
+            continue
+        if not (1.0 <= t <= dur - 0.5) or any(abs(t - x["t"]) < 2.5 for x in marks):
+            continue  # the rules the model may have bent: not in the first second, spaced out
+        v, s = ok(m.get("v"), v_keys), ok(m.get("s"), s_keys)
+        if v == "none" and s == "none":
+            continue
+        marks.append({"t": t, "v": v, "s": s, "why": str(m.get("why") or "").strip()[:60]})
+    h = out.get("hook") if isinstance(out.get("hook"), dict) else {}
+    return {"hook": {"v": ok(h.get("v"), v_keys), "s": ok(h.get("s"), s_keys)}, "marks": marks[:hi], "model": model["label"]}
+
+
+# ---------- follow a person: the camera of one scene stays on whoever the user boxed ----------
+PERSON_FPS, PERSON_W = 6, 480  # samples a second and analysis width: enough for a smooth camera, light to decode
+PERSON_AI_CALLS = 30           # most vision-model looks per request when the AI fills the lost stretches
+
+# A 7B vision model compares two images poorly but finds a described person in one image well enough, so the
+# person is described once from the boxed crop, then looked for by that description; the box it gives is only a
+# search area, where the person's looks are matched to place them exactly (and a wrong person is turned down).
+PERSON_WHO_PROMPT = """Describe this person so they can be told apart from other people in the same room: hair,
+clothes with their colours and prints, accessories. One sentence. Reply with JSON only: {"who": "..."}"""
+PERSON_FIND_PROMPT = """Find this person in the image: {who}
+The image is {w} x {h} pixels. If they are visible, give the box around them as pixel coordinates [x1, y1, x2, y2].
+If they are not in the image, answer found false. Do not pick someone else.
+Reply with JSON only: {{"found": true, "box": [x1, y1, x2, y2]}}"""
+
+
+@app.post("/api/track-person")
+def track_person(body: dict):
+    """Follows one person through a scene. The page sends the video (`media`), the scene's range (`start`, `end`,
+    seconds) and anchors: moments where the person was boxed by hand (`anchors`: [{t, box: [x, y, w, h]}], shares
+    of the frame; the old single `t` + `box` works too). Tracks from every anchor forward and back; on a scene cut
+    it looks for the person again by appearance. With `ai`, the vision model looks for them in the stretches still
+    lost and each find becomes an anchor too. Returns the box centre and size (shares) every 1/fps s, null where
+    they are lost, and the anchors used (AI ones marked)."""
+    import base64
+    import cv2
+    import numpy as np
+
+    src = fetch.media_path(str(body.get("media") or ""))
+    try:
+        start, end = float(body.get("start")), float(body.get("end"))
+        raw = body.get("anchors") or [{"t": body.get("t"), "box": body.get("box")}]
+        anchors = [{"t": float(a["t"]), "box": [float(v) for v in a["box"]], "ai": bool(a.get("ai"))} for a in raw][:60]
+    except (TypeError, ValueError, KeyError):
+        raise HTTPException(400, "Send start, end and anchors [{t, box: [x, y, w, h]}].")
+    if not (0 <= start < end) or end - start > 900 or not anchors:
+        raise HTTPException(400, "The scene is out of range.")
+    for an in anchors:
+        if len(an["box"]) != 4 or not (0.01 < an["box"][2] <= 1 and 0.01 < an["box"][3] <= 1):
+            raise HTTPException(400, "A box is out of range.")
+        an["t"] = min(max(an["t"], start), end)
+    fps = PERSON_FPS if end - start <= 150 else max(2, int(900 / (end - start)))  # long scenes: fewer frames in memory
+    info = video_info(src)
+    vw, vh = info.get("width") or 16, info.get("height") or 9
+    W = PERSON_W
+    H = max(2, round(W * vh / vw / 2) * 2)
+    size = W * H * 3
+    cmd = ["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src), "-an",
+           "-vf", f"fps={fps},scale={W}:{H}:flags=fast_bilinear,format=bgr24", "-f", "rawvideo", "-"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    frames = []
+    try:
+        for buf in iter(lambda: proc.stdout.read(size), b""):
+            if len(buf) != size:
+                break
+            frames.append(np.frombuffer(buf, np.uint8).reshape(H, W, 3))
+    finally:
+        proc.stdout.close()
+        proc.wait()
+    n = len(frames)
+    if not n:
+        raise HTTPException(400, "Could not read that part of the video.")
+
+    def new_tracker(frame, box):
+        tr = cv2.TrackerMIL_create()
+        tr.init(frame, tuple(int(v) for v in box))
+        return tr
+
+    small = [cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), (64, 36)).astype(np.int16) for f in frames]
+    cut = [False] + [float(np.abs(small[i] - small[i - 1]).mean()) > 28 for i in range(1, n)]  # cut[i]: frame i starts a shot
+
+    def hist(frame, box):
+        x, y, w, h = (int(v) for v in box)
+        patch = frame[max(0, y):y + h, max(0, x):x + w]
+        if patch.size == 0:
+            return None
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        h_ = cv2.calcHist([hsv], [0, 1], None, [30, 32], [0, 180, 0, 256])
+        return cv2.normalize(h_, h_).flatten()
+
+    # The person's looks: (colour histogram, image patch) from every anchor, plus a few more taken while tracking
+    # well, so they can be found again after a cut to another camera (other side, other size).
+    looks = []
+
+    def add_look(frame, box):
+        x, y, w, h = (int(v) for v in box)
+        patch = frame[max(0, y):y + h, max(0, x):x + w]
+        if patch.shape[0] >= 10 and patch.shape[1] >= 10:
+            looks.append((hist(frame, box), patch.copy()))
+
+    def likeness(frame, box, pool=None):
+        h2 = hist(frame, box)
+        return max((cv2.compareHist(h, h2, cv2.HISTCMP_CORREL) for h, _ in (pool or looks)), default=0.0) if h2 is not None else 0.0
+
+    def find_again(frame, pool=None):
+        """After a cut or when lost: the spot most like one of the person's looks, at several sizes, checked by colours.
+        `pool`: the looks to match (inside the anchor's own shot, only that anchor's)."""
+        pool = pool or looks
+        best = None
+        for _, tpl in pool[:8]:
+            for k in (0.5, 0.7, 0.85, 1.0, 1.2, 1.45, 1.8, 2.3, 3.0):
+                tw, th = int(tpl.shape[1] * k), int(tpl.shape[0] * k)
+                if tw < 10 or th < 10 or tw >= W or th >= H:
+                    continue
+                res = cv2.matchTemplate(frame, cv2.resize(tpl, (tw, th)), cv2.TM_CCOEFF_NORMED)
+                _, score, _, (x, y) = cv2.minMaxLoc(res)
+                if score >= 0.45 and (best is None or score > best[0]):
+                    if likeness(frame, (x, y, tw, th), pool) >= 0.55:
+                        best = (score, (x, y, tw, th))
+        return best[1] if best else None
+
+    def refine(frame, box):
+        """A loose box (a cut-out framed with room around someone) is mostly background, which the tracker would
+        follow instead. With a face inside it, track the head and upper body; the page keeps the box's offset."""
+        if not FACE_MODEL.exists():
+            return box
+        try:
+            det = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (W, H), 0.6)
+            _, faces = det.detect(frame)
+        except cv2.error as e:
+            print(f"face check for tracking failed: {e}")
+            return box
+        bx0, by0, bw0, bh0 = box
+        inside = [f[:4] for f in (faces if faces is not None else [])
+                  if bx0 <= f[0] + f[2] / 2 <= bx0 + bw0 and by0 <= f[1] + f[3] / 2 <= by0 + bh0]
+        if not inside:
+            return box
+        # The face nearest the box's upper middle (where a head sits in a box around one person), not the biggest:
+        # a loose box can hold a second, closer person's face.
+        cx, cy = bx0 + bw0 / 2, by0 + bh0 * 0.3
+        fx, fy, fw, fh = min(inside, key=lambda f: ((f[0] + f[2] / 2 - cx) / bw0) ** 2 + ((f[1] + f[3] / 2 - cy) / bh0) ** 2)
+        x0, y0 = max(bx0, fx - fw), max(by0, fy - fh * 0.5)
+        x1, y1 = min(bx0 + bw0, fx + fw * 2), min(by0 + bh0, fy + fh * 3.5)
+        if x1 - x0 >= 8 and y1 - y0 >= 8 and (x1 - x0) * (y1 - y0) < 0.8 * bw0 * bh0:
+            return int(x0), int(y0), int(x1 - x0), int(y1 - y0)
+        return box
+
+    def run(order, box):
+        """Track along frame indices `order` (away from an anchor, the anchor first). Each result is (box, sure):
+        sure while the tracker has held on since the anchor; a cut or a loss makes the rest re-found guesses."""
+        # Inside the anchor's own shot the person looks like the anchor box: check drift and look for them again
+        # against that look only (other shots' looks would let the tracker slide onto someone dressed alike).
+        x, y, w, h = (int(v) for v in box)
+        mine = [(hist(frames[order[0]], box), frames[order[0]][max(0, y):y + h, max(0, x):x + w].copy())]
+        out, tr, sure, good, home = [], None, True, 0, True
+        for k, i in enumerate(order):
+            fr = frames[i]
+            # A cut lies between this frame and the previous one in playing order.
+            crossed = k > 0 and (cut[i] if i > order[k - 1] else cut[order[k - 1]])
+            home = home and not crossed
+            pool = mine if home else None
+            if k == 0:
+                tr, cur = new_tracker(fr, box), box
+            elif tr is not None and not crossed:
+                ok, b = tr.update(fr)
+                cur = b if ok and b[2] > 4 and b[3] > 4 else None
+                # Drift check every second: the box must still look like the person.
+                if cur is not None and k % fps == 0 and likeness(fr, cur) < 0.35:
+                    cur = None
+                if cur is None:
+                    sure = False
+                    cur = find_again(fr, pool)
+                    tr = new_tracker(fr, cur) if cur else None
+            else:  # a cut, or lost: look for them again (on a cut at once, while lost every other frame)
+                sure = False
+                cur = find_again(fr, pool) if crossed or k % 2 == 0 else None
+                tr = new_tracker(fr, cur) if cur else None
+            good = good + 1 if cur is not None else 0
+            if cur is not None and good % (2 * fps) == 0 and likeness(fr, cur, pool) > 0.7:
+                xx, yy, ww, hh = (int(v) for v in cur)
+                patch = fr[max(0, yy):yy + hh, max(0, xx):xx + ww]
+                if patch.shape[0] >= 10 and patch.shape[1] >= 10:  # every 2 s of sure tracking, one more look
+                    if home and len(mine) < 6:
+                        mine.append((hist(fr, cur), patch.copy()))
+                    if len(looks) < 16:
+                        looks.append((hist(fr, cur), patch.copy()))
+            out.append((cur, sure))
+        return out
+
+    def to_px(b):
+        return (int(b[0] * W), int(b[1] * H), max(8, int(b[2] * W)), max(8, int(b[3] * H)))
+
+    def solve():
+        """Track from every anchor and merge: between two anchors, frames the earlier one held on to (forward) or
+        the later one held on to (backward) win; otherwise the nearer anchor's re-found guess; else lost."""
+        # A box drawn by hand beats an AI find: AI anchors in the same shot as a hand-drawn one are dropped.
+        shot, k = [], 0
+        for i in range(n):
+            k += cut[i]
+            shot.append(k)
+        at = lambda a: min(n - 1, max(0, round((a["t"] - start) * fps)))
+        hand = {shot[at(a)] for a in anchors if not a.get("ai")}
+        anchors[:] = [a for a in anchors if not a.get("ai") or shot[at(a)] not in hand]
+        pts = sorted({at(a): a for a in sorted(anchors, key=lambda a: bool(a.get("ai")), reverse=True)}.items())
+        idx = [i for i, _ in pts]
+        boxed_shots = {shot[i] for i in idx}
+        boxes = {i: refine(frames[i], to_px(a["box"])) for i, a in pts}
+        for i in idx:
+            add_look(frames[i], boxes[i])
+        out = [None] * n
+
+        # In a shot with a box of its own, only that shot's boxes count: a guess carried over a cut from another
+        # shot loses to them (and when they lost the person there, the camera holds rather than guess).
+        def score(o, j):
+            if o is None:
+                return (False, False, False, -1e9)
+            b, sure, d, home = o
+            return (home or shot[j] not in boxed_shots, b is not None, sure, -d)
+
+        for k, i in enumerate(idx):
+            nxt = idx[k + 1] if k + 1 < len(idx) else n
+            prv = idx[k - 1] if k > 0 else -1
+            for j, (b, sure) in zip(range(i, nxt), run(list(range(i, nxt)), boxes[i])):
+                out[j] = (b, sure, j - i, shot[j] == shot[i])
+            for j, (b, sure) in zip(range(i, prv, -1), run(list(range(i, prv, -1)), boxes[i])):
+                cand = (b, sure, i - j, shot[j] == shot[i])
+                if j != i and score(cand, j) > score(out[j], j):
+                    out[j] = cand
+        return [o[0] if o and score(o, j)[0] else None for j, o in enumerate(out)]
+
+    boxes = solve()
+
+    if body.get("ai"):
+        model = ai_model()
+        AW = 896
+        AH = max(28, round(AW * H / W / 28) * 28)
+
+        def jpg(img):
+            return base64.b64encode(cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])[1]).decode()
+
+        ref = looks[0][1]
+        ref = cv2.resize(ref, (ref.shape[1] * 3, ref.shape[0] * 3)) if ref.shape[0] < 120 else ref
+        try:
+            who = str(ollama_json(model, PERSON_WHO_PROMPT, {"type": "object", "required": ["who"],
+                                                             "properties": {"who": {"type": "string"}}},
+                                  [jpg(ref)], 0.1).get("who") or "").strip()[:300]
+        except HTTPException as e:
+            raise HTTPException(502, f"The AI could not look at the person: {e.detail}")
+        schema = {"type": "object", "required": ["found", "box"],
+                  "properties": {"found": {"type": "boolean"}, "box": {"type": "array", "items": {"type": "number"}}}}
+
+        def place_in(frame, area):
+            """The person's exact box inside `area` (pixels of the analysis frame): best look match there."""
+            ax, ay, aw, ah = area
+            x0, y0 = max(0, int(ax - aw * 0.4)), max(0, int(ay - ah * 0.4))
+            x1, y1 = min(W, int(ax + aw * 1.4)), min(H, int(ay + ah * 1.4))
+            region, best = frame[y0:y1, x0:x1], None
+            for _, tpl in looks[:12]:
+                for k in (0.5, 0.7, 0.85, 1.0, 1.2, 1.45, 1.8, 2.3, 3.0):
+                    tw, th = int(tpl.shape[1] * k), int(tpl.shape[0] * k)
+                    if tw < 10 or th < 10 or tw >= region.shape[1] or th >= region.shape[0]:
+                        continue
+                    res = cv2.matchTemplate(region, cv2.resize(tpl, (tw, th)), cv2.TM_CCOEFF_NORMED)
+                    _, score, _, (x, y) = cv2.minMaxLoc(res)
+                    if score >= 0.35 and (best is None or score > best[0]):
+                        if likeness(frame, (x0 + x, y0 + y, tw, th)) >= 0.5:
+                            best = (score, (x0 + x, y0 + y, tw, th))
+            return best[1] if best else None
+
+        def ai_find(i):
+            img = cv2.resize(frames[i], (AW, AH))
+            try:
+                out = ollama_json(model, PERSON_FIND_PROMPT.format(who=who.replace('"', "'"), w=AW, h=AH), schema,
+                                  [jpg(img)], 0.1)
+            except HTTPException as e:
+                print(f"AI person search failed: {e.detail}")
+                return None
+            bb = out.get("box") or []
+            if not out.get("found") or len(bb) != 4:
+                return None
+            try:
+                x1, y1, x2, y2 = (float(v) for v in bb)
+            except (TypeError, ValueError):
+                return None
+            if max(x1, x2, y1, y2) <= 1.0:  # some models answer in shares
+                x1, x2, y1, y2 = x1 * AW, x2 * AW, y1 * AH, y2 * AH
+            x1, x2 = sorted((max(0.0, x1), min(float(AW), x2)))
+            y1, y2 = sorted((max(0.0, y1), min(float(AH), y2)))
+            if x2 - x1 < 6 or y2 - y1 < 6 or (x2 - x1) * (y2 - y1) > 0.8 * AW * AH:
+                return None
+            k = W / AW
+            area = (x1 * k, y1 * k, (x2 - x1) * k, (y2 - y1) * k)
+            got = place_in(frames[i], area)
+            if got is None:
+                return None  # nothing there looks like the person: the model picked someone else
+            gx, gy, gw, gh = got
+            return [gx / W, gy / H, gw / W, gh / H]
+
+        calls, tried = 0, set()
+        for _ in range(4):  # rounds: look into every lost stretch, re-track, repeat on what is still lost
+            runs, i = [], 0
+            while i < n:
+                if boxes[i] is None:
+                    j = i
+                    while j < n and boxes[j] is None:
+                        j += 1
+                    if j - i >= max(2, fps // 2):
+                        runs.append((i, j))
+                    i = j
+                else:
+                    i += 1
+            added = False
+            for i, j in sorted(runs, key=lambda r: r[0] - r[1]):  # longest first
+                for m in (i + (j - i) // 3, i + 2 * (j - i) // 3):  # up to 2 looks per lost stretch per round
+                    if calls >= PERSON_AI_CALLS or m in tried:
+                        continue
+                    tried.add(m)
+                    calls += 1
+                    box = ai_find(m)
+                    if box:
+                        anchors.append({"t": start + m / fps, "box": [round(v, 4) for v in box], "ai": True})
+                        added = True
+                        break
+            if not added or calls >= PERSON_AI_CALLS:
+                break
+            boxes = solve()
+
+    def share(b):
+        if b is None:
+            return None
+        bx_, by_, bw_, bh_ = (float(v) for v in b)
+        return [round((bx_ + bw_ / 2) / W, 4), round((by_ + bh_ / 2) / H, 4), round(bw_ / W, 4), round(bh_ / H, 4)]
+
+    pts = [share(b) for b in boxes]
+    found = sum(p is not None for p in pts)
+    return {"start": start, "step": 1 / fps, "points": pts, "found": round(found / max(1, n), 3),
+            "cuts": [round(start + i / fps, 2) for i in range(1, n) if cut[i]],
+            "anchors": [{"t": round(a["t"], 3), "box": a["box"], **({"ai": True} if a.get("ai") else {})} for a in anchors]}
 
 
 def detect_faces(frames: list[str]) -> list[list[list[float]]]:
@@ -963,6 +1576,7 @@ def ai_post_text(body: dict):
     if thumb_text:
         # The thumbnail is what people see first; the title and captions continue its idea so the post reads as one.
         context += f'\nThe thumbnail of the video says: "{thumb_text}"' + THUMB_TEXT_RULES
+    context += rules_block(channel_rules(body), "titles, descriptions and captions")
     camp = campaigns.from_body(body)
     context += campaigns.prompt_block(camp)
     frames = [f.split(",", 1)[-1] for f in body.get("frames", [])][:4]
@@ -1128,6 +1742,35 @@ def viral_words(body: dict) -> list[str]:
             seen.add(w.lower())
             out.append(w)
     return out[:40]
+
+
+def channel_rules(body: dict) -> list[tuple[str, str]]:
+    """The "AI rules" of the accounts this clip is posted on, sent with the request: [(label, rules)], at most 6."""
+    raw = body.get("channel_rules")
+    items = raw if isinstance(raw, list) else ([{"rules": raw}] if raw else [])
+    out, seen = [], set()
+    for x in items:
+        x = x if isinstance(x, dict) else {"rules": x}
+        rules = re.sub(r"[{}]", "", str(x.get("rules") or "")).strip()[:4000]
+        label = re.sub(r'[{}"]', "", str(x.get("label") or "")).strip()[:60]
+        if rules and rules.lower() not in seen:
+            seen.add(rules.lower())
+            out.append((label, rules))
+    return out[:6]
+
+
+def rules_block(rules: list[tuple[str, str]], what: str) -> str:
+    """Prompt text (no braces) that makes the channel's own rules outrank the built-in style tips."""
+    if not rules:
+        return ""
+    s = (f"\n\nCHANNEL RULES: the channel this is posted on has its own style for the {what}. Follow these rules first;"
+         " they outrank every other style tip in this prompt (length, capitals, tone, words to use). Still never invent"
+         " something the clip does not show.")
+    for label, r in rules:
+        s += f'\n{("Rules of " + label) if label else "Rules"}:\n"""\n{r}\n"""'
+    if len(rules) > 1:
+        s += "\nWhen these channels' rules disagree, follow the first one."
+    return s + "\n"
 
 
 def viral_block(words: list[str]) -> str:
@@ -1448,7 +2091,7 @@ Pick the ONE frame that makes the strongest thumbnail. A great thumbnail frame h
 - the peak moment or a strong hint of it (the action, the reveal, the reaction), not a calm or in-between moment;
 - good light and contrast. Avoid blurry frames, motion smear, closed eyes, half-faces, black/transition frames, menus and frames covered by text.
 Then write the thumbnail text, in {language}:
-- "text": 2 to 4 words, ALL about the curiosity or emotion of the clip, big and bold. It must not repeat the title word for word and must not describe the picture ("man on stage"). Think "I QUIT.", "SHE SAID YES", "DON'T WAIT", "100 VS 1". No hashtags, no emojis.
+- "text": 1 to 3 words (never more than 3), ALL about the curiosity or emotion of the clip, big and bold. It must not repeat the title word for word and must not describe the picture ("man on stage"). Think "I QUIT.", "SHE SAID YES", "DON'T WAIT", "100 VS 1". No hashtags, no emojis.
 - "accent": the ONE word of "text" to highlight in color (the most emotional or surprising word).
 - "position": where the text goes so it does not cover the subject's face: "top" or "bottom".
 """ + ENGAGEMENT_RULES + """
@@ -1471,6 +2114,7 @@ def ai_thumbnail(body: dict):
         context += f'\nWhat is said in the clip: "{body["transcript"].strip()[:1500]}"'
     if (body.get("hook") or "").strip():
         context += f'\nOn-screen hook: "{body["hook"].strip()[:150]}"'
+    context += rules_block(channel_rules(body), "thumbnail text")
     n = len(frames)
     schema = {"type": "object", "required": ["frame", "text", "accent", "position"], "properties": {
         "frame": {"type": "integer", "minimum": 1, "maximum": n}, "text": {"type": "string"},
@@ -1481,9 +2125,7 @@ def ai_thumbnail(body: dict):
     except Exception as e:
         raise HTTPException(502, f"{model['label']} failed: {e}")
     text = re.sub(r"#\w+", "", str(out.get("text") or "")).strip().strip('"').strip()
-    words = text.split()
-    if len(words) > 5:  # the model sometimes writes a sentence; a thumbnail reads at a glance
-        text = " ".join(words[:4])
+    text = max_words(text, 3)  # a thumbnail reads at a glance: never more than 3 words
     accent = str(out.get("accent") or "").strip().strip('"')
     if accent.lower() not in text.lower():
         accent = max(text.split(), key=len, default="")
@@ -1571,6 +2213,51 @@ def analysis_file(media: str) -> Path:
     return ANALYSIS / f"{media}.json"
 
 
+def analyze_media(r: dict, report, cancelled=lambda: False) -> int:
+    """Speech, loudness and motion for a downloaded video, saved for the page to score. Returns the word count.
+
+    Runs on the same single worker as uploads; report(fraction, status) follows it.
+    """
+    result = analyze_path(fetch.media_path(r["media"]), report, cancelled)
+    ANALYSIS.mkdir(parents=True, exist_ok=True)
+    analysis_file(r["media"]).write_text(json.dumps(result), "utf-8")
+    return sum(len(s.get("words") or []) for s in result.get("segments") or [])
+
+
+def analyze_path(src: Path, report=lambda p, s: None, cancelled=lambda: False) -> dict:
+    """Speech, loudness and motion of any video file (what the page scores moments from), on the single worker."""
+    tid = uuid.uuid4().hex
+    jobs[tid] = {"status": "queued", "progress": 0.0}
+    workdir = Path(tempfile.mkdtemp(prefix="clipstudio_"))
+    future = executor.submit(run_transcription, tid, workdir, src, None)
+    while not future.done():
+        t = jobs.get(tid, {})
+        report(t.get("progress", 0.0), str(t.get("status", "")))
+        if cancelled():
+            raise RuntimeError("cancelled")
+        time.sleep(1)
+    t = jobs.pop(tid, {})
+    if t.get("status") != "done":
+        raise RuntimeError("Analysis failed: " + str(t.get("error") or "unknown error"))
+    return t["result"]
+
+
+def run_live_part(part: dict, opts: dict):
+    """Live shorts: one finished part of a recording gets its own notification, and its moments are found
+    while the next part is still being recorded."""
+    nid = notify.add("moments", part["title"][:120], "Waiting for the part before it…", status="running", progress=0.0)
+    try:
+        def report(p, step):
+            notify.live[nid] = {"progress": round(0.99 * p, 3), "phase": "analyze", "step": step}
+        words = analyze_media(part, report)
+        res = f"{min(part['width'], part['height'])}p · " if part.get("height") else ""
+        notify.update(nid, status="done", read=False, progress=1.0, result={**part, **opts},
+                      body=f"{res}{words} words transcribed. Open it to see its clips scoring over 50 virality "
+                           f"(up to {opts['count']}).")
+    except Exception as e:
+        notify.update(nid, status="error", read=False, body=str(e))
+
+
 def run_auto(job_id: str, fetch_id: str, opts: dict, on_done=None):
     """on_done(result, error) is called at the end (channels.py follows its imports with it)."""
     job, nid = auto_jobs[job_id], auto_jobs[job_id]["nid"]
@@ -1580,8 +2267,13 @@ def run_auto(job_id: str, fetch_id: str, opts: dict, on_done=None):
 
     try:
         # 1. Download (0-50 %). start_fetch already started the yt-dlp thread.
+        part_threads: list[threading.Thread] = []  # live shorts: one per recorded part
         while True:
             f = fetch.fetch_jobs.get(fetch_id) or {"status": "error", "error": "The download was lost."}
+            for part in (f.get("parts") or [])[len(part_threads):]:
+                th = threading.Thread(target=run_live_part, args=(part, opts), daemon=True)
+                th.start()
+                part_threads.append(th)
             if f["status"] == "done":
                 break
             if f["status"] == "error":
@@ -1591,32 +2283,31 @@ def run_auto(job_id: str, fetch_id: str, opts: dict, on_done=None):
                 notify.update(nid, title=f["title"])
             clock = f.get("clock")
             p = min(0.99, (time.time() - clock[0]) / clock[1]) if clock else f.get("progress", 0.0)
-            report(0.5 * p, "recording" if f["status"] == "recording" else "download", f"{round(p * 100)}%")
+            step = f"{round(p * 100)}%"
+            if "parts" in f:  # live shorts: how long it has recorded and how many parts are out
+                rec = fetch.clock_text(time.time() - clock[0]) + " recorded · " if clock else ""
+                step = f"{rec}{len(part_threads)} part{'s' * (len(part_threads) != 1)} done"
+            report(0.5 * p if "parts" not in f else p, "recording" if f["status"] in ("recording", "saving") else "download", step)
             time.sleep(1)
         fetch.fetch_jobs.pop(fetch_id, None)
+        if "parts" in f["result"]:
+            # Live shorts: every part already has its own notification with its clips; this one just closes.
+            n = f["result"]["parts"]
+            for th in part_threads:
+                th.join()
+            notify.update(nid, status="done", read=False, progress=1.0,
+                          body=f"Recorded {n} part{'s' * (n != 1)}. Each part's clips are in its own notification.")
+            if on_done:
+                on_done(None, None)
+            return
         r = job["result"] = f["result"]
         if job.get("cancel"):
             raise RuntimeError("cancelled")
 
         # 2. Speech, loudness and motion (50-100 %), on the same single worker as uploads.
         job["analyzing"] = True
-        tid = uuid.uuid4().hex
-        jobs[tid] = {"status": "queued", "progress": 0.0}
-        workdir = Path(tempfile.mkdtemp(prefix="clipstudio_"))
-        future = executor.submit(run_transcription, tid, workdir, fetch.media_path(r["media"]), None)
-        while not future.done():
-            t = jobs.get(tid, {})
-            report(0.5 + 0.49 * t.get("progress", 0.0), "analyze", str(t.get("status", "")))
-            if job.get("cancel"):
-                raise RuntimeError("cancelled")
-            time.sleep(1)
-        t = jobs.pop(tid, {})
-        if t.get("status") != "done":
-            raise RuntimeError("Analysis failed: " + str(t.get("error") or "unknown error"))
-        ANALYSIS.mkdir(parents=True, exist_ok=True)
-        analysis_file(r["media"]).write_text(json.dumps(t["result"]), "utf-8")
+        words = analyze_media(r, lambda p, step: report(0.5 + 0.49 * p, "analyze", step), lambda: job.get("cancel"))
         result = {**r, **opts}
-        words = sum(len(s.get("words") or []) for s in t["result"].get("segments") or [])
         res = f"{min(r['width'], r['height'])}p · " if r.get("height") else ""
         notify.update(nid, status="done", read=False, progress=1.0, result=result,
                       body=f"{res}{words} words transcribed. Open it to see the {opts['count']} best moments.")
@@ -1637,10 +2328,12 @@ def run_auto(job_id: str, fetch_id: str, opts: dict, on_done=None):
 def import_moments(body: dict, on_done=None, title: str = "") -> dict:
     opts = {"len": int(body.get("len") or 60), "count": int(body.get("count") or 5),
             "aspect": "9:16"}  # clips are always Shorts (1080x1920)
+    if body.get("account"):  # whose viral video criteria pick the moments when the result is opened
+        opts["account"] = str(body["account"])[:40]
     fetch_id = fetch.start_fetch(body)["job"]  # validates the link and the times, then starts downloading
     job_id = uuid.uuid4().hex
     nid = notify.add("moments", (title or str(body.get("url", "")).strip())[:120], "Starting…", status="running",
-                     job=job_id, progress=0.0)
+                     job=job_id, progress=0.0, request=body)  # `request` lets the bell retry it if it fails
     auto_jobs[job_id] = {"nid": nid, "fetch": fetch_id}
     threading.Thread(target=run_auto, args=(job_id, fetch_id, opts, on_done), daemon=True).start()
     return {"job": job_id, "notification": nid}
@@ -1652,6 +2345,23 @@ def start_import_moments(body: dict):
 
 
 channels.start(import_moments)  # passive mode: watch the saved channels for new videos
+criteria_check.start(analyze_path)  # "Check criteria" analyzes shorts like any video
+
+
+@app.post("/api/notifications/{nid}/retry")
+def retry_import(nid: str):
+    """Starts a failed or cancelled import (recording or past video) again with the same link and options."""
+    it = next((x for x in notify._load() if x["id"] == nid), None)
+    if not it:
+        raise HTTPException(404, "That notification is gone.")
+    if it.get("kind") != "moments" or it.get("status") not in ("error", "cancelled"):
+        raise HTTPException(400, "Only a failed import can be retried.")
+    body = it.get("request") or channels.request_for(nid)
+    if not body:
+        raise HTTPException(400, "This import is older than the Retry button, so its link wasn't saved. Paste the link again.")
+    started = import_moments(body, title=it.get("title", ""))
+    notify.delete(nid)
+    return started
 
 
 @app.post("/api/import-moments/{job_id}/stop")
@@ -1729,4 +2439,10 @@ def privacy():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", 8000)))
+    port = int(os.environ.get("PORT", 8000))
+    if LAN:
+        print("\nLAN mode: open one of these on your phone (same Wi-Fi):")
+        for ip in lan_ips() or ["<this PC's IP>"]:
+            print(f"  http://{ip}:{port}/?key={lan_key()}")
+        print()
+    uvicorn.run(app, host="0.0.0.0" if LAN else "127.0.0.1", port=port)

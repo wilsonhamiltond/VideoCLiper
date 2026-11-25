@@ -382,7 +382,7 @@ def clip_scores(f: Path) -> list[float]:
     return scores
 
 
-FACE_MODEL = ROOT / "data" / "models" / "face_detection_yunet.onnx"
+FACE_MODEL = ROOT / "models" / "face_detection_yunet_2023mar.onnx"  # the same model server.py uses
 _faces = {}
 
 
@@ -546,6 +546,10 @@ def speak(text: str, voice: str, rate: int, dst: Path) -> list[dict]:
             audio, words = asyncio.run(run())
             if audio:
                 dst.write_bytes(audio)
+                # The service sometimes ends the stream early: the word timings are all there but the audio
+                # stops mid-sentence, and the section is cut to the short audio. Ask again when that happens.
+                if words and duration(dst) < words[-1]["e"] - 0.3:
+                    raise RuntimeError(f"audio cut short ({duration(dst):.1f} s of {words[-1]['e']:.1f} s)")
                 return narrate.attach_punctuation(text, words)
         except Exception as e:  # the service drops requests in bursts; the same text works a moment later
             last = e
@@ -955,6 +959,8 @@ class Builder:
             (self.work / f"t{idx:03d}.txt").write_text(overlay, "utf-8")
             size = round(self.H * (0.05 if self.W > self.H else 0.032))
             y = "h*0.80" if self.W > self.H else "h*0.70"
+            if self.o.get("captions", True):  # the captions use the bottom: the section title goes to the top
+                y = "h*0.07" if self.W > self.H else "h*0.12"
             vf.append(f"drawtext=fontfile=font.ttf:textfile=t{idx:03d}.txt:fontsize={size}:fontcolor=white:"
                       f"box=1:boxcolor=black@0.55:boxborderw={size // 2}:x=(w-text_w)/2:y={y}:"
                       f"alpha='if(lt(t,0.4),t/0.4,if(lt(t,4.2),1,max(0,(4.8-t)/0.6)))'")
@@ -1036,8 +1042,19 @@ class Builder:
         if FONT.exists():
             shutil.copy(FONT, self.work / "font.ttf")
 
+        # 0. Sections already made as an up-to-date preview are used as they are (the page sends which).
+        reused = {}
+        for n, media in (self.guide.get("reuse") or {}).items():
+            b, w = fetch.DOWNLOADS / f"{media}.body.mp4", fetch.DOWNLOADS / f"{media}.words.json"
+            if re.fullmatch(r"[0-9a-f]{32}", str(media)) and b.exists() and w.exists():
+                try:
+                    reused[int(n)] = (b, json.loads(w.read_text("utf-8")))
+                except (ValueError, OSError):
+                    pass
+        make = [s for s in secs if s["n"] not in reused]  # the sections to make now
+
         # 1. Voice for every narration line.
-        says = [(si, pi, p) for si, s in enumerate(secs) for pi, p in enumerate(s["pieces"]) if p["type"] == "say"]
+        says = [(si, pi, p) for si, s in enumerate(make) for pi, p in enumerate(s["pieces"]) if p["type"] == "say"]
         for k, (si, pi, p) in enumerate(says):
             self.step("voice", 0.02 + 0.18 * k / len(says), f"{k + 1} of {len(says)}")
             mp3 = self.work / f"say-{si}-{pi}.mp3"
@@ -1045,10 +1062,10 @@ class Builder:
             p["audio"], p["dur"] = mp3, duration(mp3) + 0.45  # a breath before the next line
 
         # 2. Clips linked in the guide.
-        clip_ids = list(dict.fromkeys(c["id"] for s in secs for c in s["clips"]))
+        clip_ids = list(dict.fromkeys(c["id"] for s in make for c in s["clips"]))
         files = {}
         for k, cid in enumerate(clip_ids):
-            c = next(c for s in secs for c in s["clips"] if c["id"] == cid)
+            c = next(c for s in make for c in s["clips"] if c["id"] == cid)
             self.step("clips", 0.20 + 0.10 * k / max(1, len(clip_ids)), c["label"] or c["url"])
             if c["kind"] == "upload":
                 files[cid] = self.source(c)
@@ -1057,7 +1074,7 @@ class Builder:
 
         # 3. Stock search words per section (a section with its own clips uses only those, no stock).
         for k, s in enumerate(secs):
-            if s["clips"]:
+            if s["clips"] or s["n"] in reused:
                 s["queries"], s["spanish"] = [], False
                 continue
             self.step("planning", 0.30 + 0.05 * k / len(secs), s["heading"])
@@ -1069,6 +1086,24 @@ class Builder:
         total = sum(len(s["pieces"]) for s in secs)
         done = 0
         for si, s in enumerate(secs):
+            if s["n"] in reused:
+                # The preview of this section, as it was made: its picture and voice, its subtitles and credits.
+                body, meta = reused[s["n"]]
+                self.step("rendering", 0.35 + 0.55 * done / total, f"{s['heading']} · from its preview")
+                path = self.work / f"r{s['n']:03d}.mp4"
+                shutil.copy(body, path)
+                d = duration(path)
+                for a, b, w in meta.get("srt") or []:
+                    srt.append((t + a, t + b, w))
+                for cr_ in meta.get("credits") or []:
+                    if cr_.get("by") and cr_["by"] not in [c["by"] for c in self.credits]:
+                        self.credits.append(cr_)
+                pieces.append(path)
+                timeline.append({"n": s["n"], "title": s["heading"], "start": round(t, 2), "end": round(t + d, 2),
+                                 "planned": s["planned"], "reused": True})
+                t += d
+                done += len(s["pieces"])
+                continue
             pool = self.stock_pool(s["queries"], s["spanish"]) if not s["clips"] else []
             if not pool and not s["clips"]:
                 pool = self.stock_pool(["city night", "people walking", "sunset"], False)
@@ -1145,21 +1180,37 @@ class Builder:
             except Exception:
                 track = None
         fade = f"afade=t=out:st={max(0, total_s - 3):.3f}:d=3"
+        # Captions of the voice over the whole video (re-encodes the picture once); otherwise the picture is copied.
+        caps = bool(o.get("captions", True)) and bool(srt)
+        if caps:
+            self.step("mixing", 0.94, "Adding the captions")
+            (self.work / "captions.ass").write_text(make_ass(srt, self.W, self.H), "utf-8")
+        vmap = ["-map", "[v]"] if caps else ["-map", "0:v"]
+        venc = self.enc() if caps else ["-c:v", "copy"]
+        vfc = "[0:v]ass=captions.ass:fontsdir=.[v];" if caps else ""
         if track:
             vol = o["music_volume"]
-            ffmpeg(["-i", str(body), "-stream_loop", "-1", "-i", str(track), "-filter_complex",
-                    f"[1:a]aresample=48000,aformat=channel_layouts=stereo,volume={vol},afade=t=in:d=2,{fade}[m];"
+            ffmpeg(["-i", body.name, "-stream_loop", "-1", "-i", str(track), "-filter_complex",
+                    f"{vfc}[1:a]aresample=48000,aformat=channel_layouts=stereo,volume={vol},afade=t=in:d=2,{fade}[m];"
                     f"[0:a][m]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]",
-                    "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", f"{total_s:.3f}",
-                    "-movflags", "+faststart", str(out)])
+                    *vmap, "-map", "[a]", *venc, "-c:a", "aac", "-b:a", "192k", "-t", f"{total_s:.3f}",
+                    "-movflags", "+faststart", str(out)], cwd=self.work)
         else:
-            ffmpeg(["-i", str(body), "-af", fade, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)])
+            ffmpeg(["-i", body.name, "-filter_complex", f"{vfc}[0:a]{fade}[a]", *vmap, "-map", "[a]", *venc,
+                    "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)], cwd=self.work)
 
         (fetch.DOWNLOADS / f"{media}.srt").write_text(make_srt(srt), "utf-8")
+        kept = False
+        if o.get("_keep_body"):
+            # A section preview also keeps itself without music or the final fade, with its word timings, so
+            # "Create the video" can use it as that section instead of making it again.
+            shutil.copy(body, fetch.DOWNLOADS / f"{media}.body.mp4")
+            (fetch.DOWNLOADS / f"{media}.words.json").write_text(json.dumps({"srt": srt, "credits": self.credits}), "utf-8")
+            kept = True
         title = self.guide["title"]
         return {"media": media, "name": fetch.safe_name(title), "title": title, "size": out.stat().st_size,
                 "width": self.W, "height": self.H, "duration": round(duration(out), 2), "sections": timeline,
-                "credits": self.credits, "srt": f"/api/guide/srt/{media}", "file": str(out)}
+                "credits": self.credits, "srt": f"/api/guide/srt/{media}", "file": str(out), "body": kept}
 
 
 def frange(a: float, b: float, step: float):
@@ -1167,6 +1218,51 @@ def frange(a: float, b: float, step: float):
     while a <= b:
         yield round(a, 2)
         a += step
+
+
+def make_ass(words: list[tuple], W: int, H: int) -> str:
+    """Captions burned into the video, from the voice's word timings: short groups of words at the bottom, the
+    word being spoken in yellow (the style of Shorts / Reels)."""
+    vertical = H > W
+    size = round(W * 0.085) if vertical else round(H * 0.07)
+    margin = round(H * (0.24 if vertical else 0.08))
+    max_chars = 22 if vertical else 36
+
+    def ts(x):
+        cs = int(round(max(0.0, x) * 100))
+        return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
+
+    def esc(w):
+        return str(w).replace("\\", "").replace("{", "(").replace("}", ")")
+
+    groups, cur = [], []
+    for w in words:
+        if cur and (len(cur) >= 4 or len(" ".join(x[2] for x in cur + [w])) > max_chars or w[0] - cur[-1][1] > 0.6):
+            groups.append(cur)
+            cur = []
+        cur.append(w)
+        if re.search(r"[.,!?;:…]$", str(w[2])):
+            groups.append(cur)
+            cur = []
+    if cur:
+        groups.append(cur)
+    lines = []
+    for gi, g in enumerate(groups):
+        nxt = groups[gi + 1][0][0] if gi + 1 < len(groups) else g[-1][1] + 0.4
+        g_end = min(nxt, g[-1][1] + 0.4)
+        for i, w in enumerate(g):
+            start, end = w[0], (g[i + 1][0] if i + 1 < len(g) else g_end)
+            if end - start < 0.02:
+                continue
+            text = " ".join(("{\\c&H0000D7FF&}" + esc(x[2]) + "{\\c&H00FFFFFF&}") if j == i else esc(x[2]) for j, x in enumerate(g))
+            lines.append(f"Dialogue: 0,{ts(start)},{ts(end)},Cap,,0,0,0,,{text}")
+    return (f"[Script Info]\nScriptType: v4.00+\nPlayResX: {W}\nPlayResY: {H}\nWrapStyle: 0\nScaledBorderAndShadow: yes\n\n"
+            "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, "
+            "Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
+            "MarginR, MarginV, Encoding\n"
+            f"Style: Cap,Arial,{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,"
+            f"{max(3, size // 14)},{max(1, size // 30)},2,{round(W * 0.06)},{round(W * 0.06)},{margin},1\n\n"
+            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n" + "\n".join(lines) + "\n")
 
 
 def make_srt(words: list[tuple]) -> str:
@@ -1197,6 +1293,8 @@ def options(body: dict) -> dict:
                 "fitv": 2,  # saved after "follow faces" existed (older "fill" choices are read as "follow")
                 # Micro cuts: no piece of one of your clips lasts longer than this (0 = off). Default 3 s.
                 "micro": max(0.0, min(10.0, float(body.get("micro") if body.get("micro") is not None else 3))),
+                # Captions of the voice burned into the video (word by word). On unless turned off.
+                "captions": body.get("captions") not in (False, 0, "0", "off"),
                 "ai": body.get("ai", True) is not False}
     except (TypeError, ValueError):
         raise HTTPException(400, "rate, shot, insert and music_volume must be numbers")
@@ -1259,7 +1357,10 @@ def start_guide(body: dict):
         guide = parse_guide(str(body.get("text") or "")[:60000])
     except ValueError as e:
         raise HTTPException(400, str(e))
-    if not stock.pexels_key():
+    # {section number: preview media}: sections whose up-to-date preview is used instead of making them again.
+    reuse = body.get("reuse") if isinstance(body.get("reuse"), dict) else {}
+    guide["reuse"] = {str(k): str(v) for k, v in reuse.items() if re.fullmatch(r"[0-9a-f]{32}", str(v))}
+    if not stock.pexels_key() and any(not s["clips"] and str(s["n"]) not in guide["reuse"] for s in guide["sections"]):
         raise HTTPException(400, "Add your free Pexels API key first (Stock video dialog).")
     job_id, opts = uuid.uuid4().hex, options(body)
     # A notification follows the job: progress while it runs, then "ready" (or the error) even if the page was closed.
@@ -1305,12 +1406,13 @@ def preview_section(body: dict):
     old = str(body.get("replace") or "")
     if old in _previews:
         _previews.discard(old)
-        for ext in (".mp4", ".srt"):
+        for ext in (".mp4", ".srt", ".body.mp4", ".words.json"):
             (fetch.DOWNLOADS / f"{old}{ext}").unlink(missing_ok=True)
     job_id = uuid.uuid4().hex
     guide_jobs[job_id] = {"status": "voice", "progress": 0.0, "preview": True}
     one = {"title": f"{guide['title']} · {n}. {sec['heading']}", "sections": [sec]}
-    threading.Thread(target=run_preview, args=(job_id, one, options(body)), daemon=True).start()
+    opts = {**options(body), "_keep_body": True}
+    threading.Thread(target=run_preview, args=(job_id, one, opts), daemon=True).start()
     return {"job": job_id}
 
 
